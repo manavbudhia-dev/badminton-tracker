@@ -71,11 +71,28 @@ class ExerciseSessionService : Service() {
         // actually being tracked.
 
         exerciseClient.setUpdateCallback(object : ExerciseUpdateCallback {
+            override fun onRegistered() {
+                // Callback is now attached to the exercise client — nothing
+                // to do here, updates will start arriving via
+                // onExerciseUpdateReceived().
+            }
+
+            override fun onRegistrationFailed(throwable: Throwable) {
+                // Couldn't attach the callback (e.g. Health Services not
+                // available on this device). HR/calories just won't update;
+                // sensor-based smash tracking in MainActivity is unaffected.
+                Log.w(TAG, "ExerciseUpdateCallback registration failed", throwable)
+            }
+
             override fun onExerciseUpdateReceived(update: ExerciseUpdate) {
+                // HEART_RATE_BPM is a sample type: getData() returns a list
+                // of samples received since the last update.
                 val hr = update.latestMetrics.getData(DataType.HEART_RATE_BPM)
                     .lastOrNull()?.value ?: _metrics.value.heartRateBpm
+                // CALORIES_TOTAL is a cumulative type: getData() returns a
+                // single nullable data point, not a list.
                 val cal = update.latestMetrics.getData(DataType.CALORIES_TOTAL)
-                    .lastOrNull()?.total ?: _metrics.value.caloriesKcal
+                    ?.total ?: _metrics.value.caloriesKcal
                 _metrics.value = HealthMetrics(hr, cal)
             }
 
