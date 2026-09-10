@@ -30,6 +30,7 @@ private val SamsungTeal = Color(0xFF00BFA6)
 private val SamsungPurple = Color(0xFF8E5CE0)
 private val SurfaceLight = Color(0xFFF4F6FB)
 
+@OptIn(ExperimentalMaterial3Api::class)
 class PhoneMainActivity : ComponentActivity() {
     // Held at the activity level (not just inside the composable) so
     // onResume() below can refresh it — a plain `remember {}` inside
