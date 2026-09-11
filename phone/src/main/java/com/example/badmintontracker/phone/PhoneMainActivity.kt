@@ -57,6 +57,7 @@ class PhoneMainActivity : ComponentActivity() {
     // recreated) would never show up until the app was killed and reopened.
     private val sessions = mutableStateOf(listOf<SessionSummary>())
 
+    @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         sessions.value = SessionStore.loadAll(this)
@@ -263,15 +264,22 @@ private fun LatestSessionHero(session: SessionSummary) {
                 .padding(22.dp)
         ) {
             Text("Latest session · top smash speed", color = Court.InkFaint, fontSize = 12.sp)
-            Row(verticalAlignment = Alignment.LastBaseline) {
+            Row {
                 Text(
                     session.bestSpeedKph.roundToInt().toString(),
                     color = Court.Ink,
                     fontSize = 44.sp,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.alignByBaseline()
                 )
                 Spacer(Modifier.width(6.dp))
-                Text("kph", color = Court.InkDim, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                Text(
+                    "kph",
+                    color = Court.InkDim,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.alignByBaseline()
+                )
             }
             Text(
                 SimpleDateFormat("dd MMM, h:mm a", Locale.getDefault()).format(Date(session.timestamp)),
