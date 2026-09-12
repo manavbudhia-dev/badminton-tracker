@@ -95,7 +95,7 @@ class ExerciseSessionService : Service() {
                 val hr = update.latestMetrics.getData(DataType.HEART_RATE_BPM)
                     .lastOrNull()?.value ?: _metrics.value.heartRateBpm
                 val cal = update.latestMetrics.getData(DataType.CALORIES_TOTAL)
-                    .lastOrNull()?.total ?: _metrics.value.caloriesKcal
+                    ?.total ?: _metrics.value.caloriesKcal
                 _metrics.value = HealthMetrics(hr, cal)
                 if (hr > 0.0) onHeartRateSample?.invoke(System.currentTimeMillis(), hr)
             }
