@@ -7,7 +7,7 @@
         android:theme="@android:style/Theme.DeviceDefault.DayNight">
 
         <activity
-            android:name=".phone.PhoneMainActivity"
+            android:name=".PhoneMainActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -17,7 +17,7 @@
 
         <!-- Receives session summaries pushed from the watch app -->
         <service
-            android:name=".phone.WearDataListenerService"
+            android:name=".WearDataListenerService"
             android:exported="true">
             <intent-filter>
                 <action android:name="com.google.android.gms.wearable.DATA_CHANGED" />
