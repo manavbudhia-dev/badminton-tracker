@@ -379,7 +379,22 @@ private fun ThisSessionGrid(session: SessionSummary) {
             MetricTile("Avg heart rate", "${session.avgHeartRate.roundToInt()} bpm", Modifier.weight(1f))
         }
         Spacer(Modifier.height(10.dp))
-        MetricTile("Calories", "${session.calories.roundToInt()} kcal", Modifier.fillMaxWidth())
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+            MetricTile("Calories", "${session.calories.roundToInt()} kcal", Modifier.weight(1f))
+            MetricTile(
+                "Recovery",
+                if (session.avgRecoveryBpm > 0.0) "${session.avgRecoveryBpm.roundToInt()} bpm" else "—",
+                Modifier.weight(1f)
+            )
+        }
+        if (session.avgRecoveryBpm > 0.0) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Recovery = avg heart-rate drop between a rally ending and the next serve",
+                fontSize = 10.5.sp,
+                color = Court.InkFaint
+            )
+        }
     }
 }
 
@@ -457,6 +472,13 @@ private fun SessionRow(session: SessionSummary) {
                     color = Court.InkFaint,
                     fontSize = 11.5.sp
                 )
+                if (session.avgRecoveryBpm > 0.0) {
+                    Text(
+                        "recovered ${session.avgRecoveryBpm.roundToInt()} bpm avg between rallies",
+                        color = Court.Coral,
+                        fontSize = 11.sp
+                    )
+                }
             }
             Box(
                 modifier = Modifier

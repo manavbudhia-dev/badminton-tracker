@@ -15,7 +15,12 @@ data class SessionSummary(
     val rallyCount: Int,
     val longestRally: Int,
     val avgHeartRate: Double,
-    val calories: Double
+    val calories: Double,
+    // Average heart-rate drop (bpm) between a rally ending and the next
+    // serve, across the session — see HeartRateRecovery.kt on the watch
+    // side. Defaults to 0.0 so sessions synced before this field existed
+    // still load fine.
+    val avgRecoveryBpm: Double = 0.0
 )
 
 /**
@@ -31,6 +36,13 @@ object SessionStore {
     fun save(context: Context, session: SessionSummary) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val existing = loadRaw(context)
+        // The watch's synced DataItem for a session can legitimately arrive
+        // more than once (e.g. this app's cleanup delete fails after a
+        // successful save, so the same item gets redelivered next sync) —
+        // skip it instead of storing the same session twice.
+        for (i in 0 until existing.length()) {
+            if (existing.getJSONObject(i).optLong("timestamp") == session.timestamp) return
+        }
         existing.put(sessionToJson(session))
         while (existing.length() > MAX_SESSIONS) existing.remove(0)
         prefs.edit().putString(KEY, existing.toString()).apply()
@@ -57,7 +69,8 @@ object SessionStore {
                     rallyCount = obj.optInt("rallyCount", 0),
                     longestRally = obj.optInt("longestRally", 0),
                     avgHeartRate = obj.optDouble("avgHeartRate", 0.0),
-                    calories = obj.optDouble("calories", 0.0)
+                    calories = obj.optDouble("calories", 0.0),
+                    avgRecoveryBpm = obj.optDouble("avgRecoveryBpm", 0.0)
                 )
             }.onFailure { e ->
                 Log.w("SessionStore", "Skipping unreadable session at index $i", e)
@@ -87,5 +100,6 @@ object SessionStore {
         put("longestRally", session.longestRally)
         put("avgHeartRate", session.avgHeartRate)
         put("calories", session.calories)
+        put("avgRecoveryBpm", session.avgRecoveryBpm)
     }
 }

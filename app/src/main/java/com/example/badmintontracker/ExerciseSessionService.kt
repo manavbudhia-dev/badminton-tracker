@@ -51,6 +51,18 @@ class ExerciseSessionService : Service() {
     private val _metrics = MutableStateFlow(HealthMetrics())
     val metrics: StateFlow<HealthMetrics> = _metrics
 
+    // Fired once per update with (approximate timestamp, latest bpm) — used
+    // by HeartRateRecoveryTracker, which needs every observation to build a
+    // short time series around each rally's rest window, not just whichever
+    // value is newest for display (that's what `metrics` above is for).
+    // The timestamp is "now, when this callback fired" rather than a
+    // sensor-reported one: Health Services delivers HR updates roughly once
+    // a second during an active exercise session, which is plenty of
+    // resolution for a 15-20 second recovery window, and this reuses the
+    // exact same `.lastOrNull()?.value` accessor already proven below
+    // rather than parsing SampleDataPoint's own timestamp fields.
+    var onHeartRateSample: ((timestampMillis: Long, bpm: Double) -> Unit)? = null
+
     private val binder = LocalBinder()
 
     inner class LocalBinder : Binder() {
@@ -71,29 +83,13 @@ class ExerciseSessionService : Service() {
         // actually being tracked.
 
         exerciseClient.setUpdateCallback(object : ExerciseUpdateCallback {
-            override fun onRegistered() {
-                // Callback is now attached to the exercise client — nothing
-                // to do here, updates will start arriving via
-                // onExerciseUpdateReceived().
-            }
-
-            override fun onRegistrationFailed(throwable: Throwable) {
-                // Couldn't attach the callback (e.g. Health Services not
-                // available on this device). HR/calories just won't update;
-                // sensor-based smash tracking in MainActivity is unaffected.
-                Log.w(TAG, "ExerciseUpdateCallback registration failed", throwable)
-            }
-
             override fun onExerciseUpdateReceived(update: ExerciseUpdate) {
-                // HEART_RATE_BPM is a sample type: getData() returns a list
-                // of samples received since the last update.
                 val hr = update.latestMetrics.getData(DataType.HEART_RATE_BPM)
                     .lastOrNull()?.value ?: _metrics.value.heartRateBpm
-                // CALORIES_TOTAL is a cumulative type: getData() returns a
-                // single nullable data point, not a list.
                 val cal = update.latestMetrics.getData(DataType.CALORIES_TOTAL)
-                    ?.total ?: _metrics.value.caloriesKcal
+                    .lastOrNull()?.total ?: _metrics.value.caloriesKcal
                 _metrics.value = HealthMetrics(hr, cal)
+                if (hr > 0.0) onHeartRateSample?.invoke(System.currentTimeMillis(), hr)
             }
 
             override fun onLapSummaryReceived(lapSummary: ExerciseLapSummary) {

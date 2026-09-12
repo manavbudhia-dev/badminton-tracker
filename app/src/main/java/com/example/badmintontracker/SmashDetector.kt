@@ -13,9 +13,11 @@ import kotlin.math.sqrt
  * The watch is on your wrist, not the racket or the shuttle, so there is no
  * way to measure true shuttlecock speed here. This measures peak wrist
  * acceleration + rotation during a swing and converts that into an
- * approximate km/h using a calibration line you tune yourself — see
- * README.md. Until calibrated, treat the numbers as a relative power
- * score, not a real speed.
+ * approximate km/h using a calibration line. Out of the box that line is
+ * just a guess (this class's own constructor defaults) — see
+ * SpeedCalibration.kt for the on-watch wizard that replaces it with one
+ * solved from two of your own reference swings, and MainActivity.kt for how
+ * the result gets pushed in via updateCalibration() below.
  *
  * NOTE: this file replaces the earlier single-sensor version. The API is
  * now split into onAccelSample() / onGyroSample() since we read two
@@ -32,11 +34,11 @@ import kotlin.math.sqrt
  * for how it turns this into an isServe flag, and README.md section 9.
  */
 class SmashDetector(
-    private val triggerThreshold: Float = 25f,
+    val triggerThreshold: Float = 25f,
     private val debounceMillis: Long = 400L,
     private val windowMillis: Long = 150L,
-    private val calibrationSlope: Float = 4.2f,
-    private val calibrationIntercept: Float = 60f,
+    private var calibrationSlope: Float = 4.2f,
+    private var calibrationIntercept: Float = 60f,
     private val stillnessAccelThreshold: Float = 3f, // below this = "not moving", for serve detection
     // Simple moving-average window (in samples) applied to the raw accel
     // magnitude before it's compared against any threshold or tracked as a
@@ -93,6 +95,18 @@ class SmashDetector(
     /** Feed this from the gyroscope listener on every sample. */
     fun onGyroSample(x: Float, y: Float, z: Float) {
         latestGyroMagnitude = sqrt(x * x + y * y + z * z)
+    }
+
+    /**
+     * Swaps in a new calibration line — e.g. a persisted one loaded at
+     * startup (see SpeedCalibrationStore), or one just solved by
+     * CalibrationSession. Deliberately mutable rather than requiring a new
+     * SmashDetector instance, so recalibrating mid-app-lifetime doesn't
+     * disturb this detector's in-flight trigger/debounce/smoothing state.
+     */
+    fun updateCalibration(slope: Float, intercept: Float) {
+        calibrationSlope = slope
+        calibrationIntercept = intercept
     }
 
     /** Feed this from the linear-acceleration listener on every sample. */

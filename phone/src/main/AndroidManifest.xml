@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.example.badmintontracker">
 
     <application
         android:allowBackup="true"
@@ -7,7 +8,7 @@
         android:theme="@android:style/Theme.DeviceDefault.DayNight">
 
         <activity
-            android:name=".PhoneMainActivity"
+            android:name=".phone.PhoneMainActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -17,14 +18,14 @@
 
         <!-- Receives session summaries pushed from the watch app -->
         <service
-            android:name=".WearDataListenerService"
+            android:name=".phone.WearDataListenerService"
             android:exported="true">
             <intent-filter>
-                <action android:name="com.google.android.gms.wearable.MESSAGE_RECEIVED" />
+                <action android:name="com.google.android.gms.wearable.DATA_CHANGED" />
                 <data
                     android:scheme="wear"
                     android:host="*"
-                    android:path="/badminton/session" />
+                    android:pathPrefix="/badminton/session" />
             </intent-filter>
         </service>
 

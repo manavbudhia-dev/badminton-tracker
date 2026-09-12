@@ -44,8 +44,14 @@ class RallyTracker(
      * Pass [isServe] = true (from ServeDetector.isServe) when this shot's
      * pre-swing stillness signature says it's a serve — that always starts
      * a new rally, independent of [rallyGapMillis].
+     *
+     * Returns true if this shot started a new rally — meaning the previous
+     * shot (whatever the caller's own last-known shot timestamp was) marks
+     * the end of the rally that just finished. Used by
+     * HeartRateRecoveryTracker to know exactly when a rest window begins
+     * and ends.
      */
-    fun onShot(timestampMillis: Long, isServe: Boolean = false) {
+    fun onShot(timestampMillis: Long, isServe: Boolean = false): Boolean {
         val isNewRally = lastShotTime == 0L || isServe ||
             (timestampMillis - lastShotTime) > rallyGapMillis
         shotsInCurrentRally = if (isNewRally) {
@@ -57,6 +63,7 @@ class RallyTracker(
         if (shotsInCurrentRally > longestRallyShots) longestRallyShots = shotsInCurrentRally
         currentRallyShots = shotsInCurrentRally
         lastShotTime = timestampMillis
+        return isNewRally
     }
 
     fun reset() {

@@ -1,24 +1,38 @@
 package com.example.badmintontracker
 
 import android.content.Context
+import com.google.android.gms.wearable.PutDataMapRequest
 import com.google.android.gms.wearable.Wearable
 import kotlinx.coroutines.tasks.await
-import org.json.JSONObject
 
 /**
- * Sends a JSON session summary from the watch to the paired phone app
- * using Google Play Services' Wearable Data Layer (MessageClient).
+ * Pushes a session summary from the watch to the paired phone app.
  *
- * The phone app must be installed and Bluetooth-paired via the Wear OS
- * app for `connectedNodes` to return anything — this fails silently
- * (empty node list) if the phone app isn't around, which is fine for a
- * standalone watch app.
+ * Reliability note — this replaces an earlier MessageClient-based version:
+ * MessageClient.sendMessage() only works while a node is actively
+ * connected. If the phone is out of Bluetooth range, asleep, or the Wear OS
+ * connection is briefly down at the exact moment a session ends, the
+ * message used to be silently dropped with no retry — a real data-loss
+ * risk for something that only happens once per session.
+ *
+ * DataClient.putDataItem() instead hands the payload to the Wear OS data
+ * layer, which persists it on-device and keeps retrying delivery in the
+ * background — including across app restarts and reconnects — until the
+ * phone actually receives it. No custom retry/queue logic needed; the
+ * platform already does this. See WearDataListenerService on the phone
+ * side for how it's received and cleaned up once safely stored.
  */
 object WatchToPhoneSync {
-    private const val SESSION_PATH = "/badminton/session"
+    // Each session gets its own path (this prefix + "/" + its timestamp)
+    // rather than one shared path, because DataClient replaces-by-path:
+    // reusing a single fixed path would mean an unsynced session gets
+    // silently overwritten — and lost — the moment the next session ends
+    // before the first one has synced.
+    const val SESSION_PATH_PREFIX = "/badminton/session"
 
     suspend fun sendSessionSummary(
         context: Context,
+        timestamp: Long,
         smashCount: Int,
         clearCount: Int,
         dropCount: Int,
@@ -27,31 +41,33 @@ object WatchToPhoneSync {
         rallyCount: Int,
         longestRally: Int,
         avgHeartRate: Double,
-        calories: Double
+        calories: Double,
+        avgRecoveryBpm: Double = 0.0
     ) {
         // Nothing worth sending if no shots were recorded this session.
         if (smashCount + clearCount + dropCount == 0) return
 
-        val json = JSONObject().apply {
-            put("timestamp", System.currentTimeMillis())
-            put("smashCount", smashCount)
-            put("clearCount", clearCount)
-            put("dropCount", dropCount)
-            put("serveCount", serveCount)
-            put("bestSpeedKph", bestSpeedKph.toDouble())
-            put("rallyCount", rallyCount)
-            put("longestRally", longestRally)
-            put("avgHeartRate", avgHeartRate)
-            put("calories", calories)
-        }
-        val payload = json.toString().toByteArray(Charsets.UTF_8)
+        val request = PutDataMapRequest.create("$SESSION_PATH_PREFIX/$timestamp").apply {
+            dataMap.putLong("timestamp", timestamp)
+            dataMap.putInt("smashCount", smashCount)
+            dataMap.putInt("clearCount", clearCount)
+            dataMap.putInt("dropCount", dropCount)
+            dataMap.putInt("serveCount", serveCount)
+            dataMap.putDouble("bestSpeedKph", bestSpeedKph.toDouble())
+            dataMap.putInt("rallyCount", rallyCount)
+            dataMap.putInt("longestRally", longestRally)
+            dataMap.putDouble("avgHeartRate", avgHeartRate)
+            dataMap.putDouble("calories", calories)
+            dataMap.putDouble("avgRecoveryBpm", avgRecoveryBpm)
+        }.asPutDataRequest().setUrgent() // ask the system to sync this as soon as a connection exists
 
-        val nodeClient = Wearable.getNodeClient(context)
-        val messageClient = Wearable.getMessageClient(context)
-
-        val nodes = runCatching { nodeClient.connectedNodes.await() }.getOrDefault(emptyList())
-        for (node in nodes) {
-            runCatching { messageClient.sendMessage(node.id, SESSION_PATH, payload).await() }
+        // putDataItem() only throws for local problems (payload too large,
+        // Play Services unavailable, etc.) — NOT for "phone unreachable
+        // right now". An unreachable phone is exactly the case this
+        // DataItem is designed to ride out, so there's nothing extra to do
+        // here on that path; it just stays queued until it lands.
+        runCatching {
+            Wearable.getDataClient(context).putDataItem(request).await()
         }
     }
 }

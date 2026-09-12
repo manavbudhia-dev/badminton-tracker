@@ -15,7 +15,12 @@ data class SessionRecord(
     val rallyCount: Int,
     val longestRally: Int,
     val avgHeartRate: Double,
-    val calories: Double
+    val calories: Double,
+    // Average heart-rate drop (bpm) between a rally ending and the next
+    // serve, across every rest window in the session — see
+    // HeartRateRecovery.kt. Defaults to 0.0 so this stays source- and
+    // JSON-compatible with sessions saved before this field existed.
+    val avgRecoveryBpm: Double = 0.0
 )
 
 /**
@@ -67,7 +72,8 @@ object SessionHistoryStore {
                     rallyCount = obj.optInt("rallyCount", 0),
                     longestRally = obj.optInt("longestRally", 0),
                     avgHeartRate = obj.optDouble("avgHeartRate", 0.0),
-                    calories = obj.optDouble("calories", 0.0)
+                    calories = obj.optDouble("calories", 0.0),
+                    avgRecoveryBpm = obj.optDouble("avgRecoveryBpm", 0.0)
                 )
             }.onFailure { e ->
                 Log.w("SessionHistoryStore", "Skipping unreadable session at index $i", e)
@@ -102,5 +108,6 @@ object SessionHistoryStore {
         put("longestRally", session.longestRally)
         put("avgHeartRate", session.avgHeartRate)
         put("calories", session.calories)
+        put("avgRecoveryBpm", session.avgRecoveryBpm)
     }
 }
