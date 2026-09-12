@@ -57,7 +57,7 @@ class WearDataListenerService : WearableListenerService() {
                 // indefinitely. Fire-and-forget is fine — if this fails, the
                 // item just gets reprocessed on the next sync, and the
                 // dedupe check above means that's harmless, not a duplicate.
-                Wearable.getDataClient(applicationContext).deleteDataItem(item.uri)
+                Wearable.getDataClient(applicationContext).deleteDataItems(item.uri)
             }
         } finally {
             dataEvents.release()
