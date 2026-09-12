@@ -83,6 +83,14 @@ class ExerciseSessionService : Service() {
         // actually being tracked.
 
         exerciseClient.setUpdateCallback(object : ExerciseUpdateCallback {
+            override fun onRegistered() {
+                // No-op: nothing needs to happen until the first update arrives.
+            }
+
+            override fun onRegistrationFailed(throwable: Throwable) {
+                Log.w(TAG, "Failed to register exercise update callback", throwable)
+            }
+
             override fun onExerciseUpdateReceived(update: ExerciseUpdate) {
                 val hr = update.latestMetrics.getData(DataType.HEART_RATE_BPM)
                     .lastOrNull()?.value ?: _metrics.value.heartRateBpm
