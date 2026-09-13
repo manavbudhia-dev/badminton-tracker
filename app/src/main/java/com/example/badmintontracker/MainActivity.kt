@@ -26,8 +26,9 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import androidx.wear.compose.material.*
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -176,6 +177,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             bindService(it, connection, Context.BIND_AUTO_CREATE)
         }
 
+        handleAutoStartIntent(intent)
+
         setContent {
             BadmintonTrackerScreen(
                 isTracking = isTracking,
@@ -231,6 +234,36 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 onViewBalance = ::onViewBalance,
                 onBackToStrengthMenu = ::onBackToStrengthMenu
             )
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // MainActivity is launchMode="singleTask" (see AndroidManifest.xml) precisely so
+        // a tile tap while the app is already open lands here instead of spawning a
+        // second instance that would double-bind ExerciseSessionService and
+        // double-register the accel/gyro listeners.
+        setIntent(intent)
+        handleAutoStartIntent(intent)
+    }
+
+    /**
+     * Starts tracking immediately when launched from StartSessionTileService's
+     * "Start session" tile — the whole point of the tile is skipping the extra
+     * "open app, then tap Start" step once you're already on court.
+     *
+     * Guarded by `!isTracking` so tapping the tile while a session is already
+     * running can't accidentally flip it to Stop. The extra is then stripped
+     * from the stored intent so a later process-death recreation — which
+     * Android replays using this same original launch intent — can't
+     * silently auto-start a new session on its own.
+     */
+    private fun handleAutoStartIntent(intent: Intent) {
+        if (intent.getBooleanExtra(EXTRA_AUTO_START, false)) {
+            intent.putExtra(EXTRA_AUTO_START, false)
+            if (!isTracking) {
+                toggleTracking()
+            }
         }
     }
 
@@ -633,6 +666,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             isBound = false
         }
     }
+
+    companion object {
+        /** Set by StartSessionTileService's launch action. See handleAutoStartIntent(). */
+        const val EXTRA_AUTO_START = "com.example.badmintontracker.EXTRA_AUTO_START"
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -938,7 +976,8 @@ private fun HistoryScreen(
 
 @Composable
 private fun HistoryRow(session: SessionRecord) {
-    val dateFormat = remember { SimpleDateFormat("dd MMM, h:mm a", Locale.getDefault()) }
+    val dateFormat = remember { DateTimeFormatter.ofPattern("dd MMM, h:mm a", Locale.getDefault()) }
+    val zone = remember { ZoneId.systemDefault() }
     Card(
         onClick = { },
         modifier = Modifier.fillMaxWidth()
@@ -947,7 +986,7 @@ private fun HistoryRow(session: SessionRecord) {
             modifier = Modifier.padding(8.dp).fillMaxWidth()
         ) {
             Text(
-                dateFormat.format(Date(session.timestamp)),
+                Instant.ofEpochMilli(session.timestamp).atZone(zone).format(dateFormat),
                 style = MaterialTheme.typography.caption2,
                 color = Color.White.copy(alpha = 0.85f)
             )

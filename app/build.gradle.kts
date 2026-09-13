@@ -54,4 +54,11 @@ dependencies {
     implementation("com.google.android.gms:play-services-wearable:19.0.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
     implementation("org.tensorflow:tensorflow-lite:2.14.0")
+
+    // Wear OS Tile ("Start session" from the watch face — see StartSessionTileService.kt).
+    // tiles:tiles keeps TileService/RequestBuilders/TileBuilders; everything else
+    // (layout, actions, resources) moved to androidx.wear.protolayout since Tiles 1.2.
+    implementation("androidx.wear.tiles:tiles:1.6.2")
+    implementation("androidx.wear.protolayout:protolayout:1.4.2")
+    implementation("androidx.wear.protolayout:protolayout-material:1.4.2")
 }

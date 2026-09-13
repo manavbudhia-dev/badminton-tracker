@@ -1,17 +1,19 @@
 package com.example.badmintontracker.phone
 
+import android.app.Application
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.viewModels
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -28,13 +30,25 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import java.text.SimpleDateFormat
-import java.util.Date
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.roundToInt
 
 // ---- Court-toned dark palette (matches the redesign spec) --------------
-private object Court {
+// internal (not private) so Trends.kt can reuse the same palette and tiles —
+// this file and Trends.kt are one visual system, not two.
+internal object Court {
     val Bg = Color(0xFF0B1512)
     val Surface = Color(0xFF13211C)
     val SurfaceAlt = Color(0xFF1A2B25)
@@ -48,20 +62,47 @@ private object Court {
     val SkyBlue = Color(0xFF6BAEFF)
 }
 
+// java.time instead of SimpleDateFormat/Date/Calendar: those legacy classes
+// have had long-standing timezone and DST bugs (Calendar's zone handling and
+// SimpleDateFormat not being thread-safe among them). Both app modules have
+// minSdk >= 26, so java.time is available natively — no desugaring needed.
+// internal so Trends.kt (same visual system as this file) can reuse it.
+internal val sessionTimeFormatter: DateTimeFormatter =
+    DateTimeFormatter.ofPattern("dd MMM, h:mm a", Locale.getDefault())
+
+internal fun formatSessionTime(epochMillis: Long): String =
+    Instant.ofEpochMilli(epochMillis).atZone(ZoneId.systemDefault()).format(sessionTimeFormatter)
+
+/**
+ * Owns the session list as a [StateFlow] so it survives configuration
+ * changes (e.g. a rotation) without re-reading from disk, and does the
+ * actual disk read on [Dispatchers.IO] so it never blocks the main thread.
+ */
+class PhoneViewModel(application: Application) : AndroidViewModel(application) {
+    private val _sessions = MutableStateFlow<List<SessionSummary>>(emptyList())
+    val sessions: StateFlow<List<SessionSummary>> = _sessions.asStateFlow()
+
+    init {
+        refresh()
+    }
+
+    /** Re-read from storage — call when the screen comes back to the foreground. */
+    fun refresh() {
+        viewModelScope.launch {
+            val loaded = withContext(Dispatchers.IO) { SessionStore.loadAll(getApplication<Application>()) }
+            _sessions.value = loaded
+        }
+    }
+}
+
 class PhoneMainActivity : ComponentActivity() {
-    // Held at the activity level (not just inside the composable) so
-    // onResume() below can refresh it — a plain `remember {}` inside
-    // setContent only loads once when the composable first enters
-    // composition, so a new session synced in from the watch while this
-    // screen was already open (foregrounded, or resumed rather than fully
-    // recreated) would never show up until the app was killed and reopened.
-    private val sessions = mutableStateOf(listOf<SessionSummary>())
+    private val viewModel: PhoneViewModel by viewModels()
 
     @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        sessions.value = SessionStore.loadAll(this)
         setContent {
+            val sessions by viewModel.sessions.collectAsStateWithLifecycle()
             MaterialTheme(
                 colorScheme = darkColorScheme(
                     primary = Court.Lime,
@@ -95,28 +136,50 @@ class PhoneMainActivity : ComponentActivity() {
                             )
                         }
                     ) { padding ->
-                        if (sessions.value.isEmpty()) {
+                        if (sessions.isEmpty()) {
                             EmptyState(Modifier.padding(padding))
                         } else {
-                            LazyColumn(
-                                modifier = Modifier.fillMaxSize().padding(padding),
-                                contentPadding = PaddingValues(16.dp),
-                                verticalArrangement = Arrangement.spacedBy(14.dp)
-                            ) {
-                                item { LatestSessionHero(sessions.value.first()) }
-                                item { ThisSessionGrid(sessions.value.first()) }
-                                item { AllTimeSummaryRow(sessions.value) }
-                                item {
-                                    Text(
-                                        "Recent sessions",
-                                        fontWeight = FontWeight.SemiBold,
-                                        fontSize = 13.sp,
-                                        color = Court.Ink,
-                                        modifier = Modifier.padding(top = 4.dp)
+                            // Tabs only make sense once there's at least one session —
+                            // an empty Trends tab next to an empty Home tab would just
+                            // be two dead ends instead of one clear "get started" state.
+                            var selectedTab by rememberSaveable { mutableStateOf(0) }
+                            Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+                                TabRow(
+                                    selectedTabIndex = selectedTab,
+                                    containerColor = Court.Bg,
+                                    contentColor = Court.Lime,
+                                    divider = { HorizontalDivider(color = Court.Line, thickness = 1.dp) }
+                                ) {
+                                    Tab(
+                                        selected = selectedTab == 0,
+                                        onClick = { selectedTab = 0 },
+                                        text = {
+                                            Text(
+                                                "Home",
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = if (selectedTab == 0) Court.Lime else Court.InkFaint
+                                            )
+                                        }
+                                    )
+                                    Tab(
+                                        selected = selectedTab == 1,
+                                        onClick = { selectedTab = 1 },
+                                        text = {
+                                            Text(
+                                                "Trends",
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = if (selectedTab == 1) Court.Lime else Court.InkFaint
+                                            )
+                                        }
                                     )
                                 }
-                                items(sessions.value.drop(1)) { session -> SessionRow(session) }
-                                item { Spacer(Modifier.height(12.dp)) }
+                                if (selectedTab == 0) {
+                                    HomeScreen(sessions)
+                                } else {
+                                    TrendsScreen(sessions)
+                                }
                             }
                         }
                     }
@@ -130,7 +193,9 @@ class PhoneMainActivity : ComponentActivity() {
         // Re-read from storage every time the screen comes back to the
         // foreground, so a session synced in while this activity was merely
         // backgrounded (not destroyed) shows up without needing a restart.
-        sessions.value = SessionStore.loadAll(this)
+        // The ViewModel survives rotation on its own, so this only covers
+        // "new data arrived while resumed" — not configuration changes.
+        viewModel.refresh()
     }
 }
 
@@ -139,6 +204,46 @@ class PhoneMainActivity : ComponentActivity() {
 // primitives, so this file doesn't pull in an icon library the project
 // doesn't already depend on.
 // -------------------------------------------------------------------------
+
+/** The original single-screen dashboard — now the "Home" tab. See TrendsScreen (Trends.kt) for the other tab. */
+@Composable
+private fun HomeScreen(sessions: List<SessionSummary>) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        item { LatestSessionHero(sessions.first()) }
+        item { ThisSessionGrid(sessions.first()) }
+        item { AllTimeSummaryRow(sessions) }
+        // Only draw this header when there's actually a row to show under it —
+        // with exactly 1 session, the indexed items() below renders 0 rows and
+        // an unconditional header would float above empty space.
+        if (sessions.size > 1) {
+            item {
+                Text(
+                    "Recent sessions",
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 13.sp,
+                    color = Court.Ink,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+        }
+        // Indexed into the original list (count + index lambda) rather than
+        // items(sessions.drop(1)) — drop(1) allocates a whole new List on
+        // every recomposition (e.g. every scroll-triggered recomposition of
+        // this LazyColumn), just to skip one element. Reading sessions[i+1]
+        // does the same skip with no extra allocation. key = timestamp keeps
+        // row identity stable across recompositions, same as it would be
+        // for the list-based overload.
+        items(
+            count = (sessions.size - 1).coerceAtLeast(0),
+            key = { i -> sessions[i + 1].timestamp }
+        ) { i -> SessionRow(sessions[i + 1]) }
+        item { Spacer(Modifier.height(12.dp)) }
+    }
+}
 
 @Composable
 private fun BrandMark() {
@@ -282,7 +387,7 @@ private fun LatestSessionHero(session: SessionSummary) {
                 )
             }
             Text(
-                SimpleDateFormat("dd MMM, h:mm a", Locale.getDefault()).format(Date(session.timestamp)),
+                formatSessionTime(session.timestamp),
                 color = Court.InkFaint,
                 fontSize = 12.sp
             )
@@ -399,7 +504,7 @@ private fun ThisSessionGrid(session: SessionSummary) {
 }
 
 @Composable
-private fun MetricTile(label: String, value: String, modifier: Modifier = Modifier) {
+internal fun MetricTile(label: String, value: String, modifier: Modifier = Modifier) {
     Column(
         modifier
             .background(Court.Surface, RoundedCornerShape(16.dp))
@@ -452,7 +557,6 @@ private fun SummaryPill(modifier: Modifier, value: String, label: String) {
 
 @Composable
 private fun SessionRow(session: SessionSummary) {
-    val dateFormat = remember { SimpleDateFormat("dd MMM, h:mm a", Locale.getDefault()) }
     Column(Modifier.fillMaxWidth()) {
         Row(
             Modifier.fillMaxWidth().padding(top = 12.dp),
@@ -461,7 +565,7 @@ private fun SessionRow(session: SessionSummary) {
         ) {
             Column {
                 Text(
-                    dateFormat.format(Date(session.timestamp)),
+                    formatSessionTime(session.timestamp),
                     fontWeight = FontWeight.SemiBold,
                     color = Court.Ink,
                     fontSize = 13.5.sp

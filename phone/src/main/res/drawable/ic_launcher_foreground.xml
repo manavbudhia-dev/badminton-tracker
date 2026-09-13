@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A shuttlecock silhouette in Court.Lime, kept inside the adaptive-icon
+     safe zone (roughly the inner 66dp of this 108dp viewport) so it isn't
+     clipped by circular/squircle/rounded-square launcher masks. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Cork -->
+    <path
+        android:fillColor="#C6FF6B"
+        android:pathData="M46,34 a8,8 0 1,0 16,0 a8,8 0 1,0 -16,0 z" />
+    <!-- Feather skirt -->
+    <path
+        android:fillColor="#C6FF6B"
+        android:pathData="M47,40 L61,40 Q72,58 76,80 L32,80 Q36,58 47,40 Z" />
+    <!-- Feather seams -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#0B1512"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round"
+        android:pathData="M54,40 L40,80 M54,40 L54,80 M54,40 L68,80" />
+</vector>

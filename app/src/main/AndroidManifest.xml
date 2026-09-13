@@ -26,6 +26,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:theme="@android:style/Theme.DeviceDefault">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -37,6 +38,17 @@
             android:name=".ExerciseSessionService"
             android:foregroundServiceType="health"
             android:exported="false" />
+
+        <!-- The "Start session" watch-face tile. See StartSessionTileService.kt. -->
+        <service
+            android:name=".StartSessionTileService"
+            android:exported="true"
+            android:label="Badminton Tracker"
+            android:permission="com.google.android.wearable.permission.BIND_TILE_PROVIDER">
+            <intent-filter>
+                <action android:name="androidx.wear.tiles.action.BIND_TILE_PROVIDER" />
+            </intent-filter>
+        </service>
 
     </application>
 </manifest>
