@@ -42,7 +42,8 @@ object WatchToPhoneSync {
         longestRally: Int,
         avgHeartRate: Double,
         calories: Double,
-        avgRecoveryBpm: Double = 0.0
+        avgRecoveryBpm: Double = 0.0,
+        shots: List<ShotLogEntry> = emptyList()
     ) {
         // Nothing worth sending if no shots were recorded this session.
         if (smashCount + clearCount + dropCount == 0) return
@@ -59,6 +60,12 @@ object WatchToPhoneSync {
             dataMap.putDouble("avgHeartRate", avgHeartRate)
             dataMap.putDouble("calories", calories)
             dataMap.putDouble("avgRecoveryBpm", avgRecoveryBpm)
+            // Sent as a JSON string rather than a native DataMap list — DataMap
+            // supports typed lists but not lists of nested objects, and this is
+            // simpler than flattening ShotLogEntry into three parallel arrays.
+            // A few hundred shots is a few tens of KB, well under the ~100KB
+            // DataItem payload limit.
+            dataMap.putString("shots", shots.toJsonArray().toString())
         }.asPutDataRequest().setUrgent() // ask the system to sync this as soon as a connection exists
 
         // putDataItem() only throws for local problems (payload too large,

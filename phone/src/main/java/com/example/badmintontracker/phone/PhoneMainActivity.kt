@@ -6,6 +6,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -105,7 +106,20 @@ class PhoneMainActivity : ComponentActivity() {
                             // an empty Trends tab next to an empty Home tab would just
                             // be two dead ends instead of one clear "get started" state.
                             var selectedTab by rememberSaveable { mutableStateOf(0) }
+                            // Storing just the timestamp (not the SessionSummary itself)
+                            // keeps this rememberSaveable-friendly with no custom Saver —
+                            // the matching session is looked up from sessions.value below.
+                            var selectedSessionTimestamp by rememberSaveable { mutableStateOf<Long?>(null) }
+                            val selectedSession = selectedSessionTimestamp?.let { ts ->
+                                sessions.value.find { it.timestamp == ts }
+                            }
                             Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+                                if (selectedSession != null) {
+                                    SessionDetailScreen(
+                                        session = selectedSession,
+                                        onBack = { selectedSessionTimestamp = null }
+                                    )
+                                } else {
                                 TabRow(
                                     selectedTabIndex = selectedTab,
                                     containerColor = Court.Bg,
@@ -138,9 +152,13 @@ class PhoneMainActivity : ComponentActivity() {
                                     )
                                 }
                                 if (selectedTab == 0) {
-                                    HomeScreen(sessions.value)
+                                    HomeScreen(
+                                        sessions.value,
+                                        onSessionClick = { selectedSessionTimestamp = it.timestamp }
+                                    )
                                 } else {
                                     TrendsScreen(sessions.value)
+                                }
                                 }
                             }
                         }
@@ -167,13 +185,13 @@ class PhoneMainActivity : ComponentActivity() {
 
 /** The original single-screen dashboard — now the "Home" tab. See TrendsScreen (Trends.kt) for the other tab. */
 @Composable
-private fun HomeScreen(sessions: List<SessionSummary>) {
+private fun HomeScreen(sessions: List<SessionSummary>, onSessionClick: (SessionSummary) -> Unit) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        item { LatestSessionHero(sessions.first()) }
+        item { LatestSessionHero(sessions.first(), onClick = { onSessionClick(sessions.first()) }) }
         item { ThisSessionGrid(sessions.first()) }
         item { AllTimeSummaryRow(sessions) }
         item {
@@ -185,7 +203,20 @@ private fun HomeScreen(sessions: List<SessionSummary>) {
                 modifier = Modifier.padding(top = 4.dp)
             )
         }
-        items(sessions.drop(1)) { session -> SessionRow(session) }
+        items(
+            count = sessions.size - 1,
+            // A stable key (not just index) lets Compose track each row's
+            // identity across recompositions — without it, inserting a new
+            // session at the top shifts every row's index by one and
+            // Compose has no way to tell "this is still the same session,
+            // just moved" from "this is a different session that happens
+            // to be at the same index", so it re-binds more than it needs
+            // to on every new session.
+            key = { index -> sessions[index + 1].timestamp }
+        ) { index ->
+            val session = sessions[index + 1]
+            SessionRow(session, onClick = { onSessionClick(session) })
+        }
         item { Spacer(Modifier.height(12.dp)) }
     }
 }
@@ -300,9 +331,10 @@ private fun GhostTile(label: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun LatestSessionHero(session: SessionSummary) {
+private fun LatestSessionHero(session: SessionSummary, onClick: () -> Unit) {
     val totalShots = session.smashCount + session.clearCount + session.dropCount + session.serveCount
     Card(
+        onClick = onClick,
         shape = RoundedCornerShape(24.dp),
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = Color.Transparent)
@@ -350,7 +382,7 @@ private fun LatestSessionHero(session: SessionSummary) {
 }
 
 @Composable
-private fun ShotBreakdownBar(session: SessionSummary, totalShots: Int) {
+internal fun ShotBreakdownBar(session: SessionSummary, totalShots: Int) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -383,7 +415,7 @@ private fun ShotBreakdownBar(session: SessionSummary, totalShots: Int) {
 }
 
 @Composable
-private fun ShotLegend(session: SessionSummary) {
+internal fun ShotLegend(session: SessionSummary) {
     val items = listOf(
         Triple("Smash", session.smashCount, Court.Lime),
         Triple("Clear", session.clearCount, Court.Gold),
@@ -501,9 +533,9 @@ private fun SummaryPill(modifier: Modifier, value: String, label: String) {
 }
 
 @Composable
-private fun SessionRow(session: SessionSummary) {
+private fun SessionRow(session: SessionSummary, onClick: () -> Unit) {
     val dateFormat = remember { SimpleDateFormat("dd MMM, h:mm a", Locale.getDefault()) }
-    Column(Modifier.fillMaxWidth()) {
+    Column(Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Row(
             Modifier.fillMaxWidth().padding(top = 12.dp),
             horizontalArrangement = Arrangement.SpaceBetween,

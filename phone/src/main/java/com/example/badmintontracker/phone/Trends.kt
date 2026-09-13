@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -142,6 +143,24 @@ private fun startOfWeek(timestampMillis: Long): Long {
     return cal.timeInMillis
 }
 
+/**
+ * The fastest [limit] shots of [type] across every session's shot log,
+ * newest-data-required: sessions synced before the Shot Log feature
+ * existed have an empty `shots` list and simply don't contribute here.
+ *
+ * Filtered to a single shot type (default "Smash") rather than reusing
+ * SessionSummary.bestSpeedKph, because that field is really "fastest shot
+ * of any classified type in the session" (see MainActivity.onSensorChanged
+ * on the watch — it updates on every shot, not just smashes) — not what
+ * "my fastest smash" should mean here.
+ */
+fun computeTopShots(sessions: List<SessionSummary>, type: String = "Smash", limit: Int = 5): List<ShotLogEntry> =
+    sessions
+        .flatMap { it.shots }
+        .filter { it.type == type }
+        .sortedByDescending { it.speedKph }
+        .take(limit)
+
 /** Whole numbers print clean; anything else gets one decimal — used for every metric value shown on this screen. */
 private fun formatMetricValue(value: Double): String =
     if (value == value.roundToInt().toDouble()) value.roundToInt().toString()
@@ -157,6 +176,7 @@ fun TrendsScreen(sessions: List<SessionSummary>) {
     var selectedMetric by rememberSaveable { mutableStateOf(TrendMetric.SPEED) }
     val trend = remember(sessions, selectedMetric) { computeTrend(sessions, selectedMetric) }
     val weeklyActivity = remember(sessions) { computeWeeklyActivity(sessions) }
+    val topSmashes = remember(sessions) { computeTopShots(sessions) }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -175,6 +195,19 @@ fun TrendsScreen(sessions: List<SessionSummary>) {
         item { MetricChipRow(selected = selectedMetric, onSelect = { selectedMetric = it }) }
         item {
             if (trend != null) TrendCard(selectedMetric, trend) else EmptyTrendCard(selectedMetric)
+        }
+        // Only meaningful for the Speed metric — "your top 5 all-time
+        // smashes" doesn't map onto heart rate or calories.
+        if (selectedMetric == TrendMetric.SPEED && topSmashes.isNotEmpty()) {
+            item {
+                Text(
+                    "Top smashes, all time",
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 13.sp,
+                    color = Court.Ink
+                )
+            }
+            item { TopSmashesCard(topSmashes) }
         }
         item {
             Text(
@@ -397,6 +430,75 @@ private fun EmptyTrendCard(metric: TrendMetric) {
             color = Court.InkFaint,
             fontSize = 12.sp
         )
+    }
+}
+
+@Composable
+private fun TopSmashesCard(shots: List<ShotLogEntry>) {
+    val dateFormat = remember { SimpleDateFormat("d MMM, h:mm a", Locale.getDefault()) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Court.Surface, RoundedCornerShape(20.dp))
+            .border(1.dp, Court.Line, RoundedCornerShape(20.dp))
+            .padding(vertical = 8.dp)
+    ) {
+        shots.forEachIndexed { index, shot ->
+            if (index > 0) {
+                HorizontalDivider(
+                    color = Court.Line,
+                    thickness = 1.dp,
+                    modifier = Modifier.padding(horizontal = 18.dp)
+                )
+            }
+            val isBest = index == 0
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(26.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(if (isBest) Court.Gold.copy(alpha = 0.18f) else Court.Line),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "${index + 1}",
+                        color = if (isBest) Court.Gold else Court.InkDim,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "${shot.speedKph.roundToInt()} kph",
+                            color = Court.Ink,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp
+                        )
+                        if (isBest) {
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                "all-time best",
+                                color = Court.Gold,
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                    Text(
+                        dateFormat.format(Date(shot.timestampMillis)),
+                        color = Court.InkFaint,
+                        fontSize = 11.5.sp
+                    )
+                }
+            }
+        }
     }
 }
 

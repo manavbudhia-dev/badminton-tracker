@@ -20,7 +20,11 @@ data class SessionRecord(
     // serve, across every rest window in the session — see
     // HeartRateRecovery.kt. Defaults to 0.0 so this stays source- and
     // JSON-compatible with sessions saved before this field existed.
-    val avgRecoveryBpm: Double = 0.0
+    val avgRecoveryBpm: Double = 0.0,
+    // Per-shot log for this session — see ShotLog.kt. Empty for sessions
+    // recorded before this feature existed (optJSONArray below returns
+    // null for those, and toShotLogEntries() treats null as "no data").
+    val shots: List<ShotLogEntry> = emptyList()
 )
 
 /**
@@ -42,12 +46,23 @@ object SessionHistoryStore {
     private const val KEY = "sessions_json"
     private const val MAX_SESSIONS = 50 // watch storage is tighter than phone
 
+    /**
+     * @Synchronized + commit() for the same reasons as the phone's
+     * SessionStore.save() — see that doc comment. Less exposed here in
+     * practice (this is only ever called from MainActivity's main-thread
+     * button handler, not concurrent Binder callbacks), but cheap to make
+     * correct regardless, and commit()'s durability guarantee matters
+     * either way. Moved off the main thread at the call site in
+     * MainActivity.kt (Dispatchers.IO) so the now-blocking commit() can't
+     * cause a UI hitch when a session ends.
+     */
+    @Synchronized
     fun save(context: Context, session: SessionRecord) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val existing = loadRaw(context)
         existing.put(sessionToJson(session))
         while (existing.length() > MAX_SESSIONS) existing.remove(0)
-        prefs.edit().putString(KEY, existing.toString()).apply()
+        prefs.edit().putString(KEY, existing.toString()).commit()
     }
 
     fun loadAll(context: Context): List<SessionRecord> {
@@ -73,7 +88,8 @@ object SessionHistoryStore {
                     longestRally = obj.optInt("longestRally", 0),
                     avgHeartRate = obj.optDouble("avgHeartRate", 0.0),
                     calories = obj.optDouble("calories", 0.0),
-                    avgRecoveryBpm = obj.optDouble("avgRecoveryBpm", 0.0)
+                    avgRecoveryBpm = obj.optDouble("avgRecoveryBpm", 0.0),
+                    shots = obj.optJSONArray("shots").toShotLogEntries()
                 )
             }.onFailure { e ->
                 Log.w("SessionHistoryStore", "Skipping unreadable session at index $i", e)
@@ -109,5 +125,6 @@ object SessionHistoryStore {
         put("avgHeartRate", session.avgHeartRate)
         put("calories", session.calories)
         put("avgRecoveryBpm", session.avgRecoveryBpm)
+        put("shots", session.shots.toJsonArray())
     }
 }

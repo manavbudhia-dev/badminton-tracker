@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import androidx.wear.compose.material.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -65,6 +66,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private val rallyTracker = RallyTracker()
     private val serveDetector = ServeDetector()
     private var mlClassifier: MLShotClassifier? = null
+    // Per-shot record for the current session — see ShotLog.kt.
+    private val shotLog = mutableListOf<ShotLogEntry>()
 
     // A second, independent SmashDetector used only to capture the two
     // reference swings during calibration — it shares the live detector's
@@ -308,10 +311,18 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     longestRally = longestRally,
                     avgHeartRate = heartRate,
                     calories = calories,
-                    avgRecoveryBpm = recoverySummary?.avgRecoveryBpm ?: 0.0
+                    avgRecoveryBpm = recoverySummary?.avgRecoveryBpm ?: 0.0,
+                    shots = shotLog.toList()
                 )
-                SessionHistoryStore.save(this, record)
+                // history (Compose state, drives the UI) updates immediately —
+                // it doesn't need to wait on the disk write below. The write
+                // itself now uses commit() (see SessionHistoryStore.save's doc
+                // comment), which blocks, so it's dispatched to IO rather than
+                // run inline here on the main thread.
                 history = listOf(record) + history
+                lifecycleScope.launch(Dispatchers.IO) {
+                    SessionHistoryStore.save(this@MainActivity, record)
+                }
             }
             lifecycleScope.launch {
                 WatchToPhoneSync.sendSessionSummary(
@@ -326,7 +337,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     longestRally = longestRally,
                     avgHeartRate = heartRate,
                     calories = calories,
-                    avgRecoveryBpm = recoverySummary?.avgRecoveryBpm ?: 0.0
+                    avgRecoveryBpm = recoverySummary?.avgRecoveryBpm ?: 0.0,
+                    shots = shotLog.toList()
                 )
             }
         } else {
@@ -349,6 +361,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         serveCount = 0
         bestSpeedKph = 0f
         lastSpeedKph = 0f
+        shotLog.clear()
         rallyTracker.reset()
         rallyCount = 0
         longestRally = 0
@@ -380,7 +393,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     System.currentTimeMillis(), event.values[0], event.values[1], event.values[2]
                 ) ?: return
 
-                when (mlClassifier?.classify(shot) ?: classifier.classify(shot)) {
+                val classification = mlClassifier?.classify(shot) ?: classifier.classify(shot)
+                when (classification) {
                     ShotType.SMASH -> smashCount++
                     ShotType.CLEAR -> clearCount++
                     ShotType.DROP -> dropCount++
@@ -394,6 +408,16 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 // *and* flagged as a serve at the same time.
                 val isServe = serveDetector.isServe(shot)
                 if (isServe) serveCount++
+
+                // Shot Log: a per-shot record (time + type + speed) so a
+                // session can be looked back on shot-by-shot later, not just
+                // as running totals. Capped defensively — see companion
+                // object — since watch storage is tighter than the phone's.
+                labelForShot(classification, isServe)?.let { label ->
+                    if (shotLog.size < MAX_LOGGED_SHOTS_PER_SESSION) {
+                        shotLog.add(ShotLogEntry(shot.timestampMillis, label, shot.estimatedSpeedKph))
+                    }
+                }
 
                 // Every detected shot counts as rally activity. Whether it
                 // starts a *new* rally is decided by RallyTracker: an actual
@@ -669,6 +693,17 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     companion object {
         /** Set by StartSessionTileService's launch action. See handleAutoStartIntent(). */
         const val EXTRA_AUTO_START = "com.example.badmintontracker.EXTRA_AUTO_START"
+
+        /**
+         * Safety cap on Shot Log entries per session — watch storage is
+         * tighter than the phone's (see SessionHistoryStore.kt). A real
+         * session rarely exceeds a few hundred shots; this just stops a
+         * pathologically long recording (e.g. left running by mistake)
+         * from growing SharedPreferences without bound. Aggregate counts
+         * (smashCount etc.) keep counting past this cap regardless — only
+         * the detailed log stops growing.
+         */
+        const val MAX_LOGGED_SHOTS_PER_SESSION = 1000
     }
 }
 

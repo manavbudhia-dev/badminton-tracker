@@ -20,7 +20,10 @@ data class SessionSummary(
     // serve, across the session — see HeartRateRecovery.kt on the watch
     // side. Defaults to 0.0 so sessions synced before this field existed
     // still load fine.
-    val avgRecoveryBpm: Double = 0.0
+    val avgRecoveryBpm: Double = 0.0,
+    // Per-shot log for this session — see ShotLog.kt. Empty for sessions
+    // synced before this feature existed.
+    val shots: List<ShotLogEntry> = emptyList()
 )
 
 /**
@@ -33,6 +36,28 @@ object SessionStore {
     private const val KEY = "sessions_json"
     private const val MAX_SESSIONS = 100
 
+    /**
+     * @Synchronized (not present before this fix) closes the real hole:
+     * without it, two concurrent calls — plausible here since
+     * WearDataListenerService.onDataChanged can run on Binder threads that
+     * aren't guaranteed to be serialized across separate invocations — can
+     * both call loadRaw() and read the same "existing" array before either
+     * has written back. Whichever finishes last then overwrites the
+     * other's addition entirely; that's a lost update, not a stale-read
+     * timing issue, so it happens regardless of apply() vs commit().
+     *
+     * commit() is the other half: it blocks until the write is flushed to
+     * disk, so by the time this call returns, the session is durably
+     * saved. That matters specifically because WearDataListenerService
+     * calls Wearable.getDataClient().deleteDataItems() right after this —
+     * with apply() (async disk write), a process death between the apply()
+     * call and its background flush could delete the source DataItem from
+     * the watch's sync queue while the local write never actually landed,
+     * losing the session permanently. commit() closes that gap. The
+     * blocking write is a non-issue here since this always runs off the
+     * main thread (see onDataChanged).
+     */
+    @Synchronized
     fun save(context: Context, session: SessionSummary) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val existing = loadRaw(context)
@@ -45,7 +70,7 @@ object SessionStore {
         }
         existing.put(sessionToJson(session))
         while (existing.length() > MAX_SESSIONS) existing.remove(0)
-        prefs.edit().putString(KEY, existing.toString()).apply()
+        prefs.edit().putString(KEY, existing.toString()).commit()
     }
 
     fun loadAll(context: Context): List<SessionSummary> {
@@ -70,7 +95,8 @@ object SessionStore {
                     longestRally = obj.optInt("longestRally", 0),
                     avgHeartRate = obj.optDouble("avgHeartRate", 0.0),
                     calories = obj.optDouble("calories", 0.0),
-                    avgRecoveryBpm = obj.optDouble("avgRecoveryBpm", 0.0)
+                    avgRecoveryBpm = obj.optDouble("avgRecoveryBpm", 0.0),
+                    shots = obj.optJSONArray("shots").toShotLogEntries()
                 )
             }.onFailure { e ->
                 Log.w("SessionStore", "Skipping unreadable session at index $i", e)
@@ -101,5 +127,6 @@ object SessionStore {
         put("avgHeartRate", session.avgHeartRate)
         put("calories", session.calories)
         put("avgRecoveryBpm", session.avgRecoveryBpm)
+        put("shots", session.shots.toJsonArray())
     }
 }
