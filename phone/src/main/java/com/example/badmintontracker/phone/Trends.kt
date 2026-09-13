@@ -25,12 +25,9 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import java.time.DayOfWeek
-import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.time.temporal.TemporalAdjusters
-import java.time.ZonedDateTime
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -124,29 +121,26 @@ fun computeWeeklyActivity(
     weeks: Int = 8,
     nowMillis: Long = System.currentTimeMillis()
 ): List<WeekBucket> {
-    // Walking back by a fixed 7*24h in millis (the old approach) silently
-    // drifts by an hour across a DST transition, so a week boundary near a
-    // clock change could land a session in the wrong bucket or double-count/
-    // skip an hour at the edges. Doing the arithmetic in local calendar days
-    // via ZonedDateTime.minusWeeks/plusDays sidesteps that: each "day" is
-    // however long it actually is in the local zone, DST included.
-    val zone = ZoneId.systemDefault()
-    val thisWeekStart = startOfWeek(nowMillis, zone)
-    // Oldest first: i = weeks-1 (furthest back) down to i = 0 (this week).
-    val weekStarts = (weeks - 1 downTo 0).map { i -> thisWeekStart.minusWeeks(i.toLong()) }
+    val weekMillis = 7L * 24 * 60 * 60 * 1000
+    val thisWeekStart = startOfWeek(nowMillis)
+    val weekStarts = (0 until weeks).map { i -> thisWeekStart - i * weekMillis }.sorted()
     return weekStarts.map { weekStart ->
-        val weekStartMillis = weekStart.toInstant().toEpochMilli()
-        val weekEndMillis = weekStart.plusWeeks(1).toInstant().toEpochMilli()
-        WeekBucket(weekStartMillis, sessions.count { it.timestamp in weekStartMillis until weekEndMillis })
+        val weekEnd = weekStart + weekMillis
+        WeekBucket(weekStart, sessions.count { it.timestamp in weekStart until weekEnd })
     }
 }
 
-private fun startOfWeek(timestampMillis: Long, zone: ZoneId): ZonedDateTime =
-    Instant.ofEpochMilli(timestampMillis)
-        .atZone(zone)
-        .with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
-        .toLocalDate()
-        .atStartOfDay(zone)
+private fun startOfWeek(timestampMillis: Long): Long {
+    val cal = Calendar.getInstance()
+    cal.timeInMillis = timestampMillis
+    cal.firstDayOfWeek = Calendar.MONDAY
+    cal.set(Calendar.DAY_OF_WEEK, Calendar.MONDAY)
+    cal.set(Calendar.HOUR_OF_DAY, 0)
+    cal.set(Calendar.MINUTE, 0)
+    cal.set(Calendar.SECOND, 0)
+    cal.set(Calendar.MILLISECOND, 0)
+    return cal.timeInMillis
+}
 
 /** Whole numbers print clean; anything else gets one decimal — used for every metric value shown on this screen. */
 private fun formatMetricValue(value: Double): String =
@@ -323,22 +317,16 @@ private fun TrendLineChart(points: List<TrendPoint>, color: Color) {
     Canvas(modifier = Modifier.fillMaxWidth().height(120.dp)) {
         val minY = points.minOf { it.value }
         val maxY = points.maxOf { it.value }
-        val isFlat = maxY == minY
         // A flat trend (every point identical) would divide by zero below —
-        // fall back to a fixed range of 1 so the math stays safe. That alone
-        // still plugs value == minY into the normal formula, which evaluates
-        // to topPad + chartHeight (the very bottom) for every point, drawing
-        // a line hugging the floor of the chart instead of a flat line
-        // centered in it — isFlat is checked separately below to fix that.
+        // fall back to a fixed range of 1 so it draws as a flat line
+        // instead of crashing or collapsing every point onto the same spot.
         val range = (maxY - minY).let { if (it > 0.0) it else 1.0 }
         val stepX = if (points.size > 1) size.width / (points.size - 1) else 0f
         val topPad = 10f
         val bottomPad = 10f
         val chartHeight = size.height - topPad - bottomPad
 
-        fun yFor(value: Double): Float =
-            if (isFlat) topPad + (chartHeight / 2f)
-            else topPad + chartHeight - ((value - minY) / range * chartHeight).toFloat()
+        fun yFor(value: Double): Float = topPad + chartHeight - ((value - minY) / range * chartHeight).toFloat()
 
         // Faint dashed guide lines at the bottom, middle, and top of the range.
         listOf(0f, 0.5f, 1f).forEach { frac ->
@@ -434,8 +422,7 @@ private fun WeeklyActivityCard(weeks: List<WeekBucket>) {
 @Composable
 private fun WeeklyActivityChart(weeks: List<WeekBucket>) {
     val maxCount = (weeks.maxOfOrNull { it.sessionCount } ?: 0).coerceAtLeast(1)
-    val labelFormat = remember { DateTimeFormatter.ofPattern("d MMM", Locale.getDefault()) }
-    val zone = remember { ZoneId.systemDefault() }
+    val labelFormat = remember { SimpleDateFormat("d MMM", Locale.getDefault()) }
     Row(
         modifier = Modifier.fillMaxWidth().height(90.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -464,7 +451,7 @@ private fun WeeklyActivityChart(weeks: List<WeekBucket>) {
                 )
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    Instant.ofEpochMilli(week.weekStartMillis).atZone(zone).format(labelFormat),
+                    labelFormat.format(Date(week.weekStartMillis)),
                     fontSize = 9.sp,
                     color = Court.InkFaint,
                     maxLines = 1

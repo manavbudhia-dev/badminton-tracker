@@ -1,20 +1,12 @@
 package com.example.badmintontracker.phone
 
 import android.content.Context
-import androidx.room.Dao
-import androidx.room.Database
-import androidx.room.Entity
-import androidx.room.Insert
-import androidx.room.OnConflictStrategy
-import androidx.room.PrimaryKey
-import androidx.room.Query
-import androidx.room.Room
-import androidx.room.RoomDatabase
-import androidx.room.Transaction
+import android.util.Log
+import org.json.JSONArray
+import org.json.JSONObject
 
-@Entity(tableName = "sessions")
 data class SessionSummary(
-    @PrimaryKey val timestamp: Long,
+    val timestamp: Long,
     val smashCount: Int,
     val clearCount: Int,
     val dropCount: Int,
@@ -31,91 +23,83 @@ data class SessionSummary(
     val avgRecoveryBpm: Double = 0.0
 )
 
-@Dao
-interface SessionDao {
-    // IGNORE on a PrimaryKey conflict is the dedupe check the old
-    // SharedPreferences implementation did by hand (looping over the JSON
-    // array comparing timestamps) — the watch's synced DataItem for a
-    // session can legitimately arrive more than once (e.g. the phone's
-    // cleanup delete fails after a successful save, so the same item gets
-    // redelivered next sync), and this makes re-inserting it a no-op
-    // instead of a duplicate row.
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
-    fun insert(session: SessionSummary)
-
-    @Query("SELECT * FROM sessions ORDER BY timestamp DESC")
-    fun loadAll(): List<SessionSummary>
-
-    // Keeps only the newest [keep] rows. Written as "delete everything NOT
-    // in the newest-N" rather than an OFFSET-based delete so it stays
-    // correct regardless of how many rows are actually present.
-    @Query(
-        """
-        DELETE FROM sessions WHERE timestamp NOT IN (
-            SELECT timestamp FROM sessions ORDER BY timestamp DESC LIMIT :keep
-        )
-        """
-    )
-    fun trimToNewest(keep: Int)
-
-    // Room supports @Transaction on a Kotlin interface default method that
-    // calls other Dao methods on the same interface — this makes
-    // insert-then-trim a single atomic SQLite transaction, so two
-    // concurrent saves can't interleave into a lost update the way the old
-    // hand-rolled SharedPreferences read-modify-write could. This is what
-    // replaces the old @Synchronized on SessionStore.save: the atomicity
-    // guarantee now lives at the database layer instead of being
-    // hand-rolled at the call site.
-    @Transaction
-    fun insertAndTrim(session: SessionSummary, keep: Int) {
-        insert(session)
-        trimToNewest(keep)
-    }
-}
-
-@Database(entities = [SessionSummary::class], version = 1, exportSchema = false)
-abstract class SessionDatabase : RoomDatabase() {
-    abstract fun sessionDao(): SessionDao
-
-    companion object {
-        @Volatile private var instance: SessionDatabase? = null
-
-        fun get(context: Context): SessionDatabase =
-            instance ?: synchronized(this) {
-                instance ?: Room.databaseBuilder(
-                    context.applicationContext,
-                    SessionDatabase::class.java,
-                    "badminton_sessions.db"
-                ).build().also { instance = it }
-            }
-    }
-}
-
 /**
- * Local session history, backed by Room/SQLite.
- *
- * This used to be a hand-rolled JSON array under one SharedPreferences key —
- * fine for a handful of sessions, but every save() had to parse and
- * re-serialize the *entire* history, and every read had to parse the whole
- * blob just to show the last few rows. Room gives real indexed reads/writes
- * instead, and — see SessionDao.insertAndTrim above — proper transactional
- * atomicity for the insert+trim that save() does, in place of the
- * @Synchronized/apply() approach that only serialized calls within this
- * process and still risked a lost update if the process died between the
- * in-memory apply() and its asynchronous flush to disk.
- *
- * Callers are expected to invoke these off the main thread (Room throws if
- * queried on it by default) — both existing call sites already do this:
- * WearDataListenerService runs on a background Binder thread, and
- * PhoneViewModel wraps calls in Dispatchers.IO.
+ * Very simple local history store using SharedPreferences (a JSON array
+ * under one key). Fine for a personal project / a few dozen sessions —
+ * swap for a Room database if you want proper querying later.
  */
 object SessionStore {
+    private const val PREFS = "badminton_sessions"
+    private const val KEY = "sessions_json"
     private const val MAX_SESSIONS = 100
 
     fun save(context: Context, session: SessionSummary) {
-        SessionDatabase.get(context).sessionDao().insertAndTrim(session, MAX_SESSIONS)
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val existing = loadRaw(context)
+        // The watch's synced DataItem for a session can legitimately arrive
+        // more than once (e.g. this app's cleanup delete fails after a
+        // successful save, so the same item gets redelivered next sync) —
+        // skip it instead of storing the same session twice.
+        for (i in 0 until existing.length()) {
+            if (existing.getJSONObject(i).optLong("timestamp") == session.timestamp) return
+        }
+        existing.put(sessionToJson(session))
+        while (existing.length() > MAX_SESSIONS) existing.remove(0)
+        prefs.edit().putString(KEY, existing.toString()).apply()
     }
 
-    fun loadAll(context: Context): List<SessionSummary> =
-        SessionDatabase.get(context).sessionDao().loadAll()
+    fun loadAll(context: Context): List<SessionSummary> {
+        val array = loadRaw(context)
+        // Skip individual unparseable entries rather than letting one bad
+        // object crash the whole load (which would otherwise crash the app
+        // every time it's opened from now on, with no way to recover).
+        return (0 until array.length()).mapNotNull { i ->
+            runCatching {
+                val obj = array.getJSONObject(i)
+                SessionSummary(
+                    timestamp = obj.optLong("timestamp", 0L),
+                    smashCount = obj.optInt("smashCount", 0),
+                    clearCount = obj.optInt("clearCount", 0),
+                    dropCount = obj.optInt("dropCount", 0),
+                    // optInt so older stored sessions (saved before rally
+                    // tracking / serve detection existed) still load fine,
+                    // just showing 0.
+                    serveCount = obj.optInt("serveCount", 0),
+                    bestSpeedKph = obj.optDouble("bestSpeedKph", 0.0),
+                    rallyCount = obj.optInt("rallyCount", 0),
+                    longestRally = obj.optInt("longestRally", 0),
+                    avgHeartRate = obj.optDouble("avgHeartRate", 0.0),
+                    calories = obj.optDouble("calories", 0.0),
+                    avgRecoveryBpm = obj.optDouble("avgRecoveryBpm", 0.0)
+                )
+            }.onFailure { e ->
+                Log.w("SessionStore", "Skipping unreadable session at index $i", e)
+            }.getOrNull()
+        }.sortedByDescending { it.timestamp }
+    }
+
+    private fun loadRaw(context: Context): JSONArray {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val raw = prefs.getString(KEY, null) ?: return JSONArray()
+        return try {
+            JSONArray(raw)
+        } catch (e: Exception) {
+            Log.w("SessionStore", "Stored session history is corrupt, starting fresh", e)
+            JSONArray()
+        }
+    }
+
+    private fun sessionToJson(session: SessionSummary): JSONObject = JSONObject().apply {
+        put("timestamp", session.timestamp)
+        put("smashCount", session.smashCount)
+        put("clearCount", session.clearCount)
+        put("dropCount", session.dropCount)
+        put("serveCount", session.serveCount)
+        put("bestSpeedKph", session.bestSpeedKph)
+        put("rallyCount", session.rallyCount)
+        put("longestRally", session.longestRally)
+        put("avgHeartRate", session.avgHeartRate)
+        put("calories", session.calories)
+        put("avgRecoveryBpm", session.avgRecoveryBpm)
+    }
 }

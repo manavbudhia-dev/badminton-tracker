@@ -26,9 +26,8 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import androidx.wear.compose.material.*
 import kotlinx.coroutines.launch
-import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -976,8 +975,7 @@ private fun HistoryScreen(
 
 @Composable
 private fun HistoryRow(session: SessionRecord) {
-    val dateFormat = remember { DateTimeFormatter.ofPattern("dd MMM, h:mm a", Locale.getDefault()) }
-    val zone = remember { ZoneId.systemDefault() }
+    val dateFormat = remember { SimpleDateFormat("dd MMM, h:mm a", Locale.getDefault()) }
     Card(
         onClick = { },
         modifier = Modifier.fillMaxWidth()
@@ -986,7 +984,7 @@ private fun HistoryRow(session: SessionRecord) {
             modifier = Modifier.padding(8.dp).fillMaxWidth()
         ) {
             Text(
-                Instant.ofEpochMilli(session.timestamp).atZone(zone).format(dateFormat),
+                dateFormat.format(Date(session.timestamp)),
                 style = MaterialTheme.typography.caption2,
                 color = Color.White.copy(alpha = 0.85f)
             )

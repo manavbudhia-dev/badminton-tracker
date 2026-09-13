@@ -56,9 +56,11 @@ dependencies {
     implementation("org.tensorflow:tensorflow-lite:2.14.0")
 
     // Wear OS Tile ("Start session" from the watch face — see StartSessionTileService.kt).
-    // tiles:tiles keeps TileService/RequestBuilders/TileBuilders; everything else
-    // (layout, actions, resources) moved to androidx.wear.protolayout since Tiles 1.2.
-    implementation("androidx.wear.tiles:tiles:1.6.2")
-    implementation("androidx.wear.protolayout:protolayout:1.4.2")
-    implementation("androidx.wear.protolayout:protolayout-material:1.4.2")
+    // Pinned to 1.5.0/1.3.0: tiles 1.6.x raised the minimum to compileSdk 35 +
+    // AGP 8.6.0 (for the new Material3TileService), and this project is on
+    // compileSdk 34 / AGP 8.5.2. 1.5.0 is the last stable release before that
+    // bump and has everything StartSessionTileService.kt uses.
+    implementation("androidx.wear.tiles:tiles:1.5.0")
+    implementation("androidx.wear.protolayout:protolayout:1.3.0")
+    implementation("androidx.wear.protolayout:protolayout-material:1.3.0")
 }
