@@ -12,6 +12,7 @@ import android.hardware.SensorManager
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -24,6 +25,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
+import androidx.wear.compose.foundation.AmbientMode
+import androidx.wear.compose.foundation.LocalAmbientModeManager
+import androidx.wear.compose.foundation.rememberAmbientModeManager
 import androidx.wear.compose.material.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -58,23 +62,17 @@ private val BadmintonWearColors = Colors(
 
 class MainActivity : ComponentActivity(), SensorEventListener {
 
+    // Sensor access here is now used only by the Arm Balance rep counter — a
+    // short, foreground-only interaction. Live shot detection AND the
+    // calibration wizard's reference-swing capture both live in
+    // ExerciseSessionService instead (see its class doc for why): a Wear OS
+    // Activity's onPause() fires as soon as the screen dims or the wrist
+    // drops, which used to kill shot tracking (and could just as easily kill
+    // a calibration capture mid-wait) within seconds via this same
+    // SensorManager.
     private lateinit var sensorManager: SensorManager
     private var accelSensor: Sensor? = null
-    private var gyroSensor: Sensor? = null
-    private val detector = SmashDetector()
-    private val classifier = ShotClassifier()
-    private val rallyTracker = RallyTracker()
-    private val serveDetector = ServeDetector()
-    private var mlClassifier: MLShotClassifier? = null
-    // Per-shot record for the current session — see ShotLog.kt.
-    private val shotLog = mutableListOf<ShotLogEntry>()
-
-    // A second, independent SmashDetector used only to capture the two
-    // reference swings during calibration — it shares the live detector's
-    // trigger threshold (for CalibrationSession's math to line up) but not
-    // its calibration line, since only peakAccelMagnitude is read from its
-    // output, never its estimatedSpeedKph.
-    private val calibrationDetector = SmashDetector(triggerThreshold = detector.triggerThreshold)
+    private var usingMlModel by mutableStateOf(false)
 
     private var exerciseService: ExerciseSessionService? = null
     private var isBound = false
@@ -101,7 +99,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var calibrationHardSpeed by mutableStateOf(250f)
     private var calibrationResult by mutableStateOf<SpeedCalibration?>(null)
     private var hasCalibration by mutableStateOf(false) // reflects a saved, real (non-factory) calibration
-    private var calibrationSession = CalibrationSession(triggerThreshold = detector.triggerThreshold)
+    private var calibrationSession = CalibrationSession(triggerThreshold = SmashDetector.DEFAULT_TRIGGER_THRESHOLD)
 
     // --- Arm Balance / conditioning tracking state ----------------------
     // See StrengthTracking.kt for why this measures reps + relative power
@@ -117,12 +115,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var bodyCompEntries by mutableStateOf(listOf<BodyCompositionEntry>())
     private var bodyCompInput by mutableStateOf(30f)
 
-    // --- Heart Rate Recovery tracking state ------------------------------
-    // See HeartRateRecovery.kt for the full "why". Fed from two places:
-    // exerciseService's per-sample HR callback (wired in onServiceConnected
-    // below) and every rally boundary detected in onSensorChanged.
-    private val heartRateRecoveryTracker = HeartRateRecoveryTracker()
-    private var previousShotTimestamp = 0L // this session's own boundary bookkeeping — RallyTracker doesn't expose its internal copy
+    // --- Heart Rate Recovery / live shot-tracking display state ----------
+    // The actual HeartRateRecoveryTracker and shot-detection pipeline now
+    // live in ExerciseSessionService (so they survive the screen turning
+    // off) — this is just the Activity's mirror of the service's
+    // trackingState flow, for Compose to render. See onServiceConnected.
     private var lastRecoveryPoint by mutableStateOf<RallyRecoveryPoint?>(null) // most recently completed rest window, for the live stat
 
     private val connection = object : ServiceConnection {
@@ -130,13 +127,32 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             val localBinder = binder as ExerciseSessionService.LocalBinder
             exerciseService = localBinder.getService()
             isBound = true
-            exerciseService?.onHeartRateSample = { timestampMillis, bpm ->
-                heartRateRecoveryTracker.onHeartRateSample(timestampMillis, bpm)
-            }
+            usingMlModel = exerciseService?.hasMlModel ?: false
             lifecycleScope.launch {
                 exerciseService?.metrics?.collect { metrics ->
                     heartRate = metrics.heartRateBpm
                     calories = metrics.caloriesKcal
+                }
+            }
+            lifecycleScope.launch {
+                exerciseService?.trackingState?.collect { state ->
+                    smashCount = state.smashCount
+                    clearCount = state.clearCount
+                    dropCount = state.dropCount
+                    serveCount = state.serveCount
+                    bestSpeedKph = state.bestSpeedKph
+                    lastSpeedKph = state.lastSpeedKph
+                    rallyCount = state.rallyCount
+                    longestRally = state.longestRally
+                    lastRecoveryPoint = state.lastRecoveryPoint
+                }
+            }
+            // Calibration reference-swing capture now runs in the service
+            // (see its class doc) — this just relays each captured swing
+            // back into the wizard's own state machine below.
+            lifecycleScope.launch {
+                exerciseService?.calibrationSwingCaptured?.collect { peakAccelMagnitude ->
+                    onCalibrationSwingCaptured(peakAccelMagnitude)
                 }
             }
         }
@@ -155,22 +171,23 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         super.onCreate(savedInstanceState)
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
-        gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
 
         requestNeededPermissions()
 
-        // Null if shot_classifier.tflite isn't in assets/ yet — onSensorChanged
-        // falls back to the rule-based ShotClassifier in that case.
-        mlClassifier = MLShotClassifier.tryLoad(this)
+        // Room forbids querying on the main thread by default, so this is
+        // dispatched to IO like SessionHistoryStore.save() already is
+        // (see toggleTracking()) — `history` starts empty and the History
+        // screen recomposes the moment this coroutine finishes, rather than
+        // blocking app launch on a database read.
+        lifecycleScope.launch(Dispatchers.IO) {
+            val loaded = SessionHistoryStore.loadAll(this@MainActivity)
+            history = loaded
+        }
 
-        history = SessionHistoryStore.loadAll(this)
-
-        // Apply a previously-saved calibration line immediately — without
-        // this, every fresh launch would silently fall back to the factory
-        // guess even for someone who already calibrated.
-        val calibration = SpeedCalibrationStore.load(this)
-        detector.updateCalibration(calibration.slope, calibration.intercept)
-        hasCalibration = calibration.isCalibrated
+        // Just the "is there a saved calibration" flag for the UI — the
+        // calibration line itself is loaded and applied by
+        // ExerciseSessionService, which owns the live SmashDetector now.
+        hasCalibration = SpeedCalibrationStore.load(this).isCalibrated
 
         conditioningSets = StrengthTrackingStore.loadSets(this)
         bodyCompEntries = StrengthTrackingStore.loadBodyComposition(this)
@@ -182,60 +199,91 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         handleAutoStartIntent(intent)
 
         setContent {
-            BadmintonTrackerScreen(
-                isTracking = isTracking,
-                smashCount = smashCount,
-                clearCount = clearCount,
-                dropCount = dropCount,
-                serveCount = serveCount,
-                bestSpeedKph = bestSpeedKph,
-                lastSpeedKph = lastSpeedKph,
-                rallyCount = rallyCount,
-                longestRally = longestRally,
-                heartRate = heartRate,
-                calories = calories,
-                history = history,
-                showHistory = showHistory,
-                usingMlModel = mlClassifier != null,
-                lastRecoveryPoint = lastRecoveryPoint,
-                hasCalibration = hasCalibration,
-                showCalibration = showCalibration,
-                calibrationStep = calibrationStep,
-                calibrationSoftSpeed = calibrationSoftSpeed,
-                calibrationHardSpeed = calibrationHardSpeed,
-                calibrationResult = calibrationResult,
-                showStrength = showStrength,
-                strengthMode = strengthMode,
-                selectedArm = selectedArm,
-                selectedWeightKg = selectedWeightKg,
-                currentReps = currentReps,
-                conditioningSets = conditioningSets,
-                bodyCompEntries = bodyCompEntries,
-                bodyCompInput = bodyCompInput,
-                onStartStop = ::toggleTracking,
-                onReset = ::resetSession,
-                onToggleHistory = ::onToggleHistory,
-                onToggleCalibration = ::onToggleCalibration,
-                onStartCalibrationCapture = ::onStartCalibrationCapture,
-                onAdjustSoftSpeed = ::onAdjustSoftSpeed,
-                onAdjustHardSpeed = ::onAdjustHardSpeed,
-                onConfirmSoftSpeed = ::onConfirmSoftSpeed,
-                onConfirmHardSpeed = ::onConfirmHardSpeed,
-                onRetryHardSwing = ::onRetryHardSwing,
-                onFinishCalibration = ::onFinishCalibration,
-                onToggleStrength = ::onToggleStrength,
-                onSelectArm = ::onSelectArm,
-                onAdjustWeight = ::onAdjustWeight,
-                onOpenSetSetup = ::onOpenSetSetup,
-                onStartSet = ::onStartSet,
-                onFinishSet = ::onFinishSet,
-                onCancelSet = ::onCancelSet,
-                onStartLogBodyComp = ::onStartLogBodyComp,
-                onAdjustBodyComp = ::onAdjustBodyComp,
-                onSaveBodyComp = ::onSaveBodyComp,
-                onViewBalance = ::onViewBalance,
-                onBackToStrengthMenu = ::onBackToStrengthMenu
-            )
+            // Provided once at the top of the Compose tree (the documented
+            // "production app" pattern — see LocalAmbientModeManager's own
+            // KDoc) rather than re-created per-screen, and requires nothing
+            // else: rememberAmbientModeManager() finds this Activity via
+            // LocalActivity itself and enables always-on for it.
+            val ambientModeManager = rememberAmbientModeManager()
+            CompositionLocalProvider(LocalAmbientModeManager provides ambientModeManager) {
+                // The calibration wizard needs the screen on for however
+                // long it takes the user to actually swing — Wear OS's
+                // default screen timeout can be well under that, which used
+                // to silently abort the capture. (Capture itself now
+                // survives that regardless, since it moved into
+                // ExerciseSessionService — see its class doc — but the user
+                // still needs to be able to see the wizard's prompts.)
+                LaunchedEffect(isCalibrating) {
+                    if (isCalibrating) {
+                        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    } else {
+                        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    }
+                }
+
+                if (ambientModeManager.currentAmbientMode is AmbientMode.Ambient) {
+                    AmbientBadmintonScreen(
+                        isTracking = isTracking,
+                        liveRallyCount = rallyCount,
+                        liveHeartRate = heartRate
+                    )
+                } else {
+                    BadmintonTrackerScreen(
+                        isTracking = isTracking,
+                        smashCount = smashCount,
+                        clearCount = clearCount,
+                        dropCount = dropCount,
+                        serveCount = serveCount,
+                        bestSpeedKph = bestSpeedKph,
+                        lastSpeedKph = lastSpeedKph,
+                        rallyCount = rallyCount,
+                        longestRally = longestRally,
+                        heartRate = heartRate,
+                        calories = calories,
+                        history = history,
+                        showHistory = showHistory,
+                        usingMlModel = usingMlModel,
+                        lastRecoveryPoint = lastRecoveryPoint,
+                        hasCalibration = hasCalibration,
+                        showCalibration = showCalibration,
+                        calibrationStep = calibrationStep,
+                        calibrationSoftSpeed = calibrationSoftSpeed,
+                        calibrationHardSpeed = calibrationHardSpeed,
+                        calibrationResult = calibrationResult,
+                        showStrength = showStrength,
+                        strengthMode = strengthMode,
+                        selectedArm = selectedArm,
+                        selectedWeightKg = selectedWeightKg,
+                        currentReps = currentReps,
+                        conditioningSets = conditioningSets,
+                        bodyCompEntries = bodyCompEntries,
+                        bodyCompInput = bodyCompInput,
+                        onStartStop = ::toggleTracking,
+                        onReset = ::resetSession,
+                        onToggleHistory = ::onToggleHistory,
+                        onToggleCalibration = ::onToggleCalibration,
+                        onStartCalibrationCapture = ::onStartCalibrationCapture,
+                        onAdjustSoftSpeed = ::onAdjustSoftSpeed,
+                        onAdjustHardSpeed = ::onAdjustHardSpeed,
+                        onConfirmSoftSpeed = ::onConfirmSoftSpeed,
+                        onConfirmHardSpeed = ::onConfirmHardSpeed,
+                        onRetryHardSwing = ::onRetryHardSwing,
+                        onFinishCalibration = ::onFinishCalibration,
+                        onToggleStrength = ::onToggleStrength,
+                        onSelectArm = ::onSelectArm,
+                        onAdjustWeight = ::onAdjustWeight,
+                        onOpenSetSetup = ::onOpenSetSetup,
+                        onStartSet = ::onStartSet,
+                        onFinishSet = ::onFinishSet,
+                        onCancelSet = ::onCancelSet,
+                        onStartLogBodyComp = ::onStartLogBodyComp,
+                        onAdjustBodyComp = ::onAdjustBodyComp,
+                        onSaveBodyComp = ::onSaveBodyComp,
+                        onViewBalance = ::onViewBalance,
+                        onBackToStrengthMenu = ::onBackToStrengthMenu
+                    )
+                }
+            }
         }
     }
 
@@ -244,7 +292,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         // MainActivity is launchMode="singleTask" (see AndroidManifest.xml) precisely so
         // a tile tap while the app is already open lands here instead of spawning a
         // second instance that would double-bind ExerciseSessionService and
-        // double-register the accel/gyro listeners.
+        // double-register its sensor listeners.
         setIntent(intent)
         handleAutoStartIntent(intent)
     }
@@ -286,11 +334,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     private fun toggleTracking() {
         if (isTracking) {
-            // Stopping: unregister sensors, end the Health Services session,
-            // save this session locally so it survives closing the app, and
-            // push a summary over to the phone app too.
-            sensorManager.unregisterListener(this)
-            exerciseService?.stopExercise()
+            // Stopping: snapshot the shot log/recovery points before the
+            // service resets them, stop shot detection + the Health
+            // Services session, save this session locally so it survives
+            // closing the app, and push a summary over to the phone app too.
+            val sessionShotLog = exerciseService?.snapshotShotLog() ?: emptyList()
+            val recoverySummary = summarizeRecovery(exerciseService?.snapshotRecoveryPoints() ?: emptyList())
+            exerciseService?.stopTracking()
             // Computed once so the locally-saved record and the copy synced
             // to the phone refer to the exact same session. Previously each
             // side stamped its own System.currentTimeMillis() a few lines
@@ -298,7 +348,6 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             // different timestamps — now also load-bearing, since the synced
             // DataItem's path and the phone's dedupe check both key off this.
             val sessionTimestamp = System.currentTimeMillis()
-            val recoverySummary = summarizeRecovery(heartRateRecoveryTracker.points)
             if (smashCount + clearCount + dropCount > 0) {
                 val record = SessionRecord(
                     timestamp = sessionTimestamp,
@@ -312,7 +361,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     avgHeartRate = heartRate,
                     calories = calories,
                     avgRecoveryBpm = recoverySummary?.avgRecoveryBpm ?: 0.0,
-                    shots = shotLog.toList()
+                    shots = sessionShotLog
                 )
                 // history (Compose state, drives the UI) updates immediately —
                 // it doesn't need to wait on the disk write below. The write
@@ -338,22 +387,27 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     avgHeartRate = heartRate,
                     calories = calories,
                     avgRecoveryBpm = recoverySummary?.avgRecoveryBpm ?: 0.0,
-                    shots = shotLog.toList()
+                    shots = sessionShotLog
                 )
             }
         } else {
             // Every new session starts from zero — otherwise counts left
             // over from a previous Start/Stop cycle (if the user never hit
             // "Reset") would keep accumulating and get saved/synced as part
-            // of what looks like a brand-new session.
+            // of what looks like a brand-new session. ExerciseSessionService
+            // resets its own counters/shot log/rally state as part of
+            // startTracking(); resetSession() below just clears the
+            // Activity's own mirrored display state for an instant UI reset.
             resetSession()
-            accelSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
-            gyroSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
-            exerciseService?.startExercise()
+            exerciseService?.startTracking()
         }
         isTracking = !isTracking
     }
 
+    // The counterpart shot log / rally / recovery state lives in
+    // ExerciseSessionService and is reset there by startTracking() — this
+    // just clears the Activity's own mirrored Compose state so the UI
+    // reflects zero immediately, without waiting on the trackingState flow.
     private fun resetSession() {
         smashCount = 0
         clearCount = 0
@@ -361,8 +415,6 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         serveCount = 0
         bestSpeedKph = 0f
         lastSpeedKph = 0f
-        shotLog.clear()
-        rallyTracker.reset()
         rallyCount = 0
         longestRally = 0
         // Also clear stale heart-rate/calories from a previous session so
@@ -370,98 +422,25 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         // reports fresh values for the new session.
         heartRate = 0.0
         calories = 0.0
-        heartRateRecoveryTracker.reset()
-        previousShotTimestamp = 0L
         lastRecoveryPoint = null
     }
 
+    // Live shot detection AND calibration reference-swing capture both live
+    // in ExerciseSessionService now (see its class doc). The Activity's own
+    // SensorEventListener registration is only ever used for the Arm
+    // Balance rep counter below.
     override fun onSensorChanged(event: SensorEvent) {
-        if (isCalibrating) {
-            handleCalibrationSensorEvent(event)
-            return
-        }
         if (isLoggingSet) {
             handleStrengthSensorEvent(event)
-            return
-        }
-        when (event.sensor.type) {
-            Sensor.TYPE_GYROSCOPE ->
-                detector.onGyroSample(event.values[0], event.values[1], event.values[2])
-
-            Sensor.TYPE_LINEAR_ACCELERATION -> {
-                val shot = detector.onAccelSample(
-                    System.currentTimeMillis(), event.values[0], event.values[1], event.values[2]
-                ) ?: return
-
-                val classification = mlClassifier?.classify(shot) ?: classifier.classify(shot)
-                when (classification) {
-                    ShotType.SMASH -> smashCount++
-                    ShotType.CLEAR -> clearCount++
-                    ShotType.DROP -> dropCount++
-                    ShotType.UNKNOWN -> { /* not confident enough to bucket it */ }
-                }
-                lastSpeedKph = shot.estimatedSpeedKph
-                if (shot.estimatedSpeedKph > bestSpeedKph) bestSpeedKph = shot.estimatedSpeedKph
-
-                // Serve is orthogonal to SMASH/CLEAR/DROP/UNKNOWN (see
-                // ServeDetector.kt) — a shot can be classified as, say, DROP
-                // *and* flagged as a serve at the same time.
-                val isServe = serveDetector.isServe(shot)
-                if (isServe) serveCount++
-
-                // Shot Log: a per-shot record (time + type + speed) so a
-                // session can be looked back on shot-by-shot later, not just
-                // as running totals. Capped defensively — see companion
-                // object — since watch storage is tighter than the phone's.
-                labelForShot(classification, isServe)?.let { label ->
-                    if (shotLog.size < MAX_LOGGED_SHOTS_PER_SESSION) {
-                        shotLog.add(ShotLogEntry(shot.timestampMillis, label, shot.estimatedSpeedKph))
-                    }
-                }
-
-                // Every detected shot counts as rally activity. Whether it
-                // starts a *new* rally is decided by RallyTracker: an actual
-                // serve always does, and otherwise the gap since the last
-                // shot is the fallback signal.
-                val startedNewRally = rallyTracker.onShot(shot.timestampMillis, isServe)
-                rallyCount = rallyTracker.rallyCount
-                longestRally = rallyTracker.longestRallyShots
-
-                // A new rally starting means the *previous* shot was the
-                // last one of the rally that just ended — i.e. exactly the
-                // boundaries of the rest window that just elapsed. Skipped
-                // on the very first shot of the session (previousShotTimestamp
-                // still 0), since there's no rest before a first rally.
-                if (startedNewRally && previousShotTimestamp > 0L) {
-                    heartRateRecoveryTracker.onRallyBoundary(previousShotTimestamp, shot.timestampMillis)
-                    lastRecoveryPoint = heartRateRecoveryTracker.points.lastOrNull()
-                }
-                previousShotTimestamp = shot.timestampMillis
-            }
         }
     }
 
     // --- Calibration wizard -----------------------------------------------
-    // Deliberately routed through calibrationDetector, a separate
-    // SmashDetector instance, rather than the live `detector` above — a
-    // reference swing during calibration shouldn't increment smash/clear/
-    // drop counts, feed the rally tracker, or touch bestSpeedKph. Gated in
-    // the UI to only be reachable while !isTracking, so this and the normal
-    // tracking pipeline are never both listening to the sensors at once.
-
-    private fun handleCalibrationSensorEvent(event: SensorEvent) {
-        when (event.sensor.type) {
-            Sensor.TYPE_GYROSCOPE ->
-                calibrationDetector.onGyroSample(event.values[0], event.values[1], event.values[2])
-
-            Sensor.TYPE_LINEAR_ACCELERATION -> {
-                val shot = calibrationDetector.onAccelSample(
-                    System.currentTimeMillis(), event.values[0], event.values[1], event.values[2]
-                ) ?: return
-                onCalibrationSwingCaptured(shot.peakAccelMagnitude)
-            }
-        }
-    }
+    // The actual sensor listening + SmashDetector now live in
+    // ExerciseSessionService (calibrationDetector there) — see its class
+    // doc for why. This just drives the wizard's own state machine from
+    // the swings it reports back via calibrationSwingCaptured (collected in
+    // onServiceConnected above).
 
     private fun onCalibrationSwingCaptured(peakAccelMagnitude: Float) {
         when (calibrationStep) {
@@ -481,13 +460,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     private fun startCalibrationCapture() {
         isCalibrating = true
-        accelSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
-        gyroSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+        exerciseService?.startCalibrationCapture()
     }
 
     private fun stopCalibrationCapture() {
         isCalibrating = false
-        sensorManager.unregisterListener(this)
+        exerciseService?.stopCalibrationCapture()
     }
 
     private fun onToggleCalibration() {
@@ -500,7 +478,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             if (isLoggingSet) stopStrengthCapture()
             showStrength = false
             calibrationStep = CalibrationStep.INTRO
-            calibrationSession = CalibrationSession(triggerThreshold = detector.triggerThreshold)
+            calibrationSession = CalibrationSession(triggerThreshold = SmashDetector.DEFAULT_TRIGGER_THRESHOLD)
             calibrationSoftSpeed = 80f
             calibrationHardSpeed = 250f
             calibrationResult = null
@@ -537,7 +515,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             return
         }
         SpeedCalibrationStore.save(this, result)
-        detector.updateCalibration(result.slope, result.intercept)
+        exerciseService?.updateCalibration(result.slope, result.intercept)
         hasCalibration = true
         calibrationResult = result
         calibrationStep = CalibrationStep.DONE
@@ -668,6 +646,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
+    // Only ever unregisters/re-registers the Activity's OWN listener — used
+    // for the Arm Balance rep counter, a foreground-only interaction. Live
+    // shot tracking and calibration capture both run in
+    // ExerciseSessionService and are completely unaffected by the
+    // Activity's lifecycle, which is the whole point of that design.
     override fun onPause() {
         super.onPause()
         sensorManager.unregisterListener(this)
@@ -675,15 +658,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     override fun onResume() {
         super.onResume()
-        if (isTracking || isCalibrating || isLoggingSet) {
+        if (isLoggingSet) {
             accelSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
-            gyroSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        mlClassifier?.close()
         if (isBound) {
             unbindService(connection)
             isBound = false
@@ -693,17 +674,72 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     companion object {
         /** Set by StartSessionTileService's launch action. See handleAutoStartIntent(). */
         const val EXTRA_AUTO_START = "com.example.badmintontracker.EXTRA_AUTO_START"
+    }
+}
 
-        /**
-         * Safety cap on Shot Log entries per session — watch storage is
-         * tighter than the phone's (see SessionHistoryStore.kt). A real
-         * session rarely exceeds a few hundred shots; this just stops a
-         * pathologically long recording (e.g. left running by mistake)
-         * from growing SharedPreferences without bound. Aggregate counts
-         * (smashCount etc.) keep counting past this cap regardless — only
-         * the detailed log stops growing.
-         */
-        const val MAX_LOGGED_SHOTS_PER_SESSION = 1000
+// ---------------------------------------------------------------------
+// Ambient mode — a deliberately minimal screen, not just a dimmed copy of
+// BadmintonTrackerScreen. Per the Ambient Mode guidelines: mostly black,
+// no fine detail or solid color blocks, and values that could go stale
+// between the system's infrequent ambient redraws (heart rate updates
+// roughly every second while tracking) are snapshotted rather than shown
+// live — see the LaunchedEffect/AmbientTickEffect below — so what's on
+// screen is never quietly out of date by minutes.
+// ---------------------------------------------------------------------
+@Composable
+fun AmbientBadmintonScreen(
+    isTracking: Boolean,
+    liveRallyCount: Int,
+    liveHeartRate: Double
+) {
+    val ambientModeManager = LocalAmbientModeManager.current
+
+    var snapshotRallyCount by remember { mutableStateOf(liveRallyCount) }
+    var snapshotHeartRate by remember { mutableStateOf(liveHeartRate) }
+    LaunchedEffect(Unit) {
+        snapshotRallyCount = liveRallyCount
+        snapshotHeartRate = liveHeartRate
+    }
+    // Refreshes roughly once a minute while ambient, per the guidelines —
+    // deliberately not on every liveRallyCount/liveHeartRate change, which
+    // would just repaint bright pixels on the exact cadence ambient mode
+    // exists to avoid.
+    if (ambientModeManager != null) {
+        ambientModeManager.AmbientTickEffect {
+            snapshotRallyCount = liveRallyCount
+            snapshotHeartRate = liveHeartRate
+        }
+    }
+
+    MaterialTheme(colors = BadmintonWearColors) {
+        Scaffold(timeText = { TimeText() }) {
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                if (isTracking) {
+                    Text(
+                        "RALLY",
+                        style = MaterialTheme.typography.caption2,
+                        color = Color.White.copy(alpha = 0.5f)
+                    )
+                    Text(
+                        "$snapshotRallyCount",
+                        style = MaterialTheme.typography.display1,
+                        color = Color.White
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        if (snapshotHeartRate > 0) "${snapshotHeartRate.roundToInt()} bpm" else "-- bpm",
+                        style = MaterialTheme.typography.title3,
+                        color = Color.White.copy(alpha = 0.7f)
+                    )
+                } else {
+                    Text("🏸", style = MaterialTheme.typography.display2, color = Color.White.copy(alpha = 0.6f))
+                }
+            }
+        }
     }
 }
 

@@ -16,11 +16,14 @@ package com.example.badmintontracker
  * Treat these numbers as a within-match, relative fitness indicator to
  * trend over time, not a clinical measurement.
  *
- * Feed it from two independent live streams:
- *  - every heart-rate sample, via [onHeartRateSample] (see
- *    ExerciseSessionService.onHeartRateSample)
- *  - every rally boundary, via [onRallyBoundary] (see MainActivity's
- *    onSensorChanged, where RallyTracker.onShot reports isNewRally)
+ * Feed it from two independent live streams, both driven from
+ * ExerciseSessionService now (so recovery tracking keeps running for the
+ * whole session regardless of screen state):
+ *  - every heart-rate sample, via [onHeartRateSample], called from
+ *    ExerciseSessionService's ExerciseUpdateCallback
+ *  - every rally boundary, via [onRallyBoundary], called from
+ *    ExerciseSessionService.onSensorChanged where RallyTracker.onShot
+ *    reports isNewRally
  * Samples are buffered and only sliced into "this rally" vs "this rest"
  * retroactively once a boundary arrives — in real time there's no way to
  * know a rally has ended until either the next serve or the gap timeout

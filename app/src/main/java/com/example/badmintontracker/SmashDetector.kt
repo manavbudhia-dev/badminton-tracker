@@ -16,12 +16,13 @@ import kotlin.math.sqrt
  * approximate km/h using a calibration line. Out of the box that line is
  * just a guess (this class's own constructor defaults) — see
  * SpeedCalibration.kt for the on-watch wizard that replaces it with one
- * solved from two of your own reference swings, and MainActivity.kt for how
- * the result gets pushed in via updateCalibration() below.
+ * solved from two of your own reference swings, and ExerciseSessionService.kt
+ * (owner of the live instance of this class) for how the result gets pushed
+ * in via updateCalibration() below.
  *
  * NOTE: this file replaces the earlier single-sensor version. The API is
- * now split into onAccelSample() / onGyroSample() since we read two
- * sensors now — update MainActivity.kt to the new version too.
+ * split into onAccelSample() / onGyroSample() since two sensors are read —
+ * keep ExerciseSessionService.kt's SensorEventListener in sync with this.
  *
  * Serve signature: a serve starts from a near-stationary wrist (you pause,
  * set up, then flick/push) whereas a shot in the middle of a rally flows
@@ -34,7 +35,7 @@ import kotlin.math.sqrt
  * for how it turns this into an isServe flag, and README.md section 9.
  */
 class SmashDetector(
-    val triggerThreshold: Float = 25f,
+    val triggerThreshold: Float = DEFAULT_TRIGGER_THRESHOLD,
     private val debounceMillis: Long = 400L,
     private val windowMillis: Long = 150L,
     private var calibrationSlope: Float = 4.2f,
@@ -163,5 +164,15 @@ class SmashDetector(
             lastMovementTime = timestampMillis
         }
         return null
+    }
+
+    companion object {
+        /**
+         * Shared with the calibration wizard's own reference-swing detector
+         * (see MainActivity.kt / ExerciseSessionService.kt), so both sides
+         * agree on what counts as "a swing" without either needing a live
+         * reference to the other's SmashDetector instance.
+         */
+        const val DEFAULT_TRIGGER_THRESHOLD = 25f
     }
 }

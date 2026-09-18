@@ -23,6 +23,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -38,10 +39,10 @@ import kotlin.math.roundToInt
 // below so it can be unit tested on its own, same split as
 // HeartRateRecovery.kt on the watch side.
 //
-// Why this file exists: PhoneMainActivity's dashboard (now "HomeScreen")
-// only ever shows *this* session next to a list of *past* ones — nothing
-// plots a number across sessions to show whether it's actually trending up
-// or down over time. That's what TrendsScreen adds, as a second tab.
+// Why this file exists: PhoneMainActivity's dashboard ("HomeScreen") only
+// ever shows *this* session next to a list of *past* ones — nothing plots a
+// number across sessions to show whether it's actually trending up or down
+// over time. That's what TrendsScreen adds, as a second tab.
 // =============================================================================
 
 /** One trackable number per session. Knows its own display label/unit and how to read itself off a [SessionSummary]. */
@@ -166,6 +167,37 @@ private fun formatMetricValue(value: Double): String =
     if (value == value.roundToInt().toDouble()) value.roundToInt().toString()
     else String.format(Locale.getDefault(), "%.1f", value)
 
+/**
+ * Rounds [maxValue] up to a "nice" axis ceiling (1/2/2.5/5/10 × a power of
+ * ten) with a little headroom, so the Y axis reads like 0/200/400/600/800
+ * instead of an arbitrary decimal — and so the highest point never sits
+ * exactly on the top gridline.
+ */
+private fun niceAxisTop(maxValue: Double): Double {
+    if (maxValue <= 0.0) return 1.0
+    fun niceCeil(v: Double): Double {
+        val magnitude = Math.pow(10.0, Math.floor(Math.log10(v)))
+        val normalized = v / magnitude
+        val niceNormalized = when {
+            normalized <= 1.0 -> 1.0
+            normalized <= 2.0 -> 2.0
+            normalized <= 2.5 -> 2.5
+            normalized <= 5.0 -> 5.0
+            else -> 10.0
+        }
+        return niceNormalized * magnitude
+    }
+    val rough = niceCeil(maxValue)
+    return if (rough <= maxValue) niceCeil(maxValue * 1.15) else rough
+}
+
+/** Picks up to [maxLabels] evenly-spaced indices out of [count] items, always including the first and last. */
+private fun sampleIndices(count: Int, maxLabels: Int = 6): List<Int> {
+    if (count <= maxLabels) return (0 until count).toList()
+    val step = (count - 1).toDouble() / (maxLabels - 1)
+    return (0 until maxLabels).map { i -> (i * step).roundToInt() }.distinct()
+}
+
 // =============================================================================
 // Composables
 // =============================================================================
@@ -183,15 +215,6 @@ fun TrendsScreen(sessions: List<SessionSummary>) {
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        item {
-            Text(
-                "Progress",
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 13.sp,
-                color = Court.Ink,
-                modifier = Modifier.padding(top = 4.dp)
-            )
-        }
         item { MetricChipRow(selected = selectedMetric, onSelect = { selectedMetric = it }) }
         item {
             if (trend != null) TrendCard(selectedMetric, trend) else EmptyTrendCard(selectedMetric)
@@ -211,13 +234,14 @@ fun TrendsScreen(sessions: List<SessionSummary>) {
         }
         item {
             Text(
-                "Weekly activity",
+                "Weekly Activity",
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 13.sp,
                 color = Court.Ink
             )
         }
         item { WeeklyActivityCard(weeklyActivity) }
+        item { MotivationalQuoteCard() }
         item { Spacer(Modifier.height(12.dp)) }
     }
 }
@@ -300,7 +324,7 @@ private fun TrendCard(metric: TrendMetric, trend: TrendSummary) {
 
         if (trend.points.size >= 2) {
             Spacer(Modifier.height(16.dp))
-            TrendLineChart(points = trend.points, color = color)
+            TrendChartWithAxes(points = trend.points, color = color)
         } else {
             Spacer(Modifier.height(10.dp))
             Text(
@@ -312,10 +336,42 @@ private fun TrendCard(metric: TrendMetric, trend: TrendSummary) {
 
         Spacer(Modifier.height(14.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-            MetricTile("Best", formatMetricValue(trend.best), Modifier.weight(1f))
-            MetricTile("Average", formatMetricValue(trend.average), Modifier.weight(1f))
-            MetricTile("Sessions", trend.points.size.toString(), Modifier.weight(1f))
+            IconMetricTile(
+                icon = { TrophyIcon(Court.Gold, iconSize = 16.dp) },
+                value = formatMetricValue(trend.best),
+                label = "Best",
+                modifier = Modifier.weight(1f)
+            )
+            IconMetricTile(
+                icon = { BarsIcon(Court.SkyBlue, iconSize = 16.dp) },
+                value = formatMetricValue(trend.average),
+                label = "Average",
+                modifier = Modifier.weight(1f)
+            )
+            IconMetricTile(
+                icon = { GridIcon(Court.InkDim, iconSize = 16.dp) },
+                value = trend.points.size.toString(),
+                label = "Sessions",
+                modifier = Modifier.weight(1f)
+            )
         }
+    }
+}
+
+@Composable
+private fun IconMetricTile(icon: @Composable () -> Unit, value: String, label: String, modifier: Modifier = Modifier) {
+    Column(
+        modifier
+            .background(Court.Surface, RoundedCornerShape(16.dp))
+            .border(1.dp, Court.Line, RoundedCornerShape(16.dp))
+            .padding(vertical = 14.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        icon()
+        Spacer(Modifier.height(6.dp))
+        Text(value, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Court.Ink)
+        Spacer(Modifier.height(2.dp))
+        Text(label, fontSize = 10.5.sp, color = Court.InkFaint)
     }
 }
 
@@ -345,21 +401,69 @@ private fun DeltaBadge(delta: Double, metric: TrendMetric) {
     }
 }
 
+/**
+ * The line chart plus its Y-axis labels (left column) and X-axis date
+ * labels (below), with a small tooltip bubble pinned over the latest
+ * point — matches the redesign spec's annotated chart rather than the
+ * bare line the first cut of this screen had.
+ */
 @Composable
-private fun TrendLineChart(points: List<TrendPoint>, color: Color) {
-    Canvas(modifier = Modifier.fillMaxWidth().height(120.dp)) {
-        val minY = points.minOf { it.value }
-        val maxY = points.maxOf { it.value }
-        // A flat trend (every point identical) would divide by zero below —
-        // fall back to a fixed range of 1 so it draws as a flat line
-        // instead of crashing or collapsing every point onto the same spot.
-        val range = (maxY - minY).let { if (it > 0.0) it else 1.0 }
+private fun TrendChartWithAxes(points: List<TrendPoint>, color: Color) {
+    val top = remember(points) { niceAxisTop(points.maxOf { it.value }) }
+    val dateFormat = remember { SimpleDateFormat("d MMM", Locale.getDefault()) }
+    val latest = points.last()
+
+    Column {
+        Row(modifier = Modifier.fillMaxWidth().height(130.dp)) {
+            Column(
+                modifier = Modifier.width(30.dp).fillMaxHeight().padding(end = 6.dp),
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(formatMetricValue(top), fontSize = 9.sp, color = Court.InkFaint)
+                Text(formatMetricValue(top / 2.0), fontSize = 9.sp, color = Court.InkFaint)
+                Text("0", fontSize = 9.sp, color = Court.InkFaint)
+            }
+            Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                TrendLineChart(points = points, color = color, top = top)
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .background(Court.Bg, RoundedCornerShape(8.dp))
+                        .border(1.dp, color.copy(alpha = 0.55f), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 8.dp, vertical = 5.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(formatMetricValue(latest.value), color = Court.Ink, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text(dateFormat.format(Date(latest.timestampMillis)), color = Court.InkFaint, fontSize = 9.sp)
+                }
+            }
+        }
+        Row(modifier = Modifier.fillMaxWidth()) {
+            Spacer(modifier = Modifier.width(36.dp))
+            Row(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                sampleIndices(points.size).forEach { i ->
+                    Text(dateFormat.format(Date(points[i].timestampMillis)), fontSize = 9.sp, color = Court.InkFaint)
+                }
+            }
+        }
+    }
+}
+
+/** Just the plotted line/fill/dots on a 0..[top] Y scale — axes and tooltip live in TrendChartWithAxes above. */
+@Composable
+private fun TrendLineChart(points: List<TrendPoint>, color: Color, top: Double) {
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        val range = if (top > 0.0) top else 1.0
         val stepX = if (points.size > 1) size.width / (points.size - 1) else 0f
         val topPad = 10f
         val bottomPad = 10f
         val chartHeight = size.height - topPad - bottomPad
 
-        fun yFor(value: Double): Float = topPad + chartHeight - ((value - minY) / range * chartHeight).toFloat()
+        fun yFor(value: Double): Float = topPad + chartHeight - ((value / range) * chartHeight).toFloat()
 
         // Faint dashed guide lines at the bottom, middle, and top of the range.
         listOf(0f, 0.5f, 1f).forEach { frac ->
@@ -546,9 +650,12 @@ private fun WeeklyActivityChart(weeks: List<WeekBucket>) {
                         .fillMaxWidth()
                         .height(
                             (week.sessionCount.toFloat() / maxCount * 48f).dp
-                                .coerceAtLeast(if (week.sessionCount > 0) 6.dp else 3.dp)
+                                .coerceAtLeast(if (week.sessionCount > 0) 6.dp else 5.dp)
                         )
-                        .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
+                        .clip(
+                            if (week.sessionCount > 0) RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp)
+                            else RoundedCornerShape(50)
+                        )
                         .background(if (week.sessionCount > 0) Court.Lime else Court.Line)
                 )
                 Spacer(Modifier.height(6.dp))
@@ -560,5 +667,40 @@ private fun WeeklyActivityChart(weeks: List<WeekBucket>) {
                 )
             }
         }
+    }
+}
+
+/** Small rotating motivational line at the bottom of Trends — deterministic per calendar day, not per recomposition. */
+private val motivationalQuotes = listOf(
+    "Small progress every session leads to big results.",
+    "Your only limit is the one you accept.",
+    "Every rally is a rep — show up and swing.",
+    "Consistency beats intensity over a season.",
+    "Track it, trust it, improve it."
+)
+
+@Composable
+private fun MotivationalQuoteCard() {
+    val quote = remember {
+        val dayIndex = (System.currentTimeMillis() / (24L * 60 * 60 * 1000)).toInt()
+        motivationalQuotes[Math.floorMod(dayIndex, motivationalQuotes.size)]
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Court.Surface, RoundedCornerShape(18.dp))
+            .border(1.dp, Court.Line, RoundedCornerShape(18.dp))
+            .padding(18.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("\u201C", color = Court.Lime, fontWeight = FontWeight.Bold, fontSize = 26.sp)
+        Spacer(Modifier.width(10.dp))
+        Text(
+            "\u201C$quote\u201D",
+            color = Court.InkDim,
+            fontSize = 13.sp,
+            fontStyle = FontStyle.Italic,
+            modifier = Modifier.weight(1f)
+        )
     }
 }

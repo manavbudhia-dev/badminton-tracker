@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  A simple shuttlecock silhouette: a flared cone ("skirt") over a small
+  circle ("cork"). Used as both the notification's small icon and the
+  Ongoing Activity's static watch-face icon (see
+  ExerciseSessionService.buildNotification()) — per the Ongoing Activity
+  guidelines, kept as a plain white-on-transparent monochrome shape, since
+  the system applies its own tint everywhere this is shown (status bar,
+  watch face, Recents).
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,2 L17,14 L7,14 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M9,17 A3,3 0 1,0 15,17 A3,3 0 1,0 9,17 Z" />
+</vector>
