@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import androidx.wear.compose.foundation.AmbientMode
+import androidx.wear.compose.foundation.AmbientTickEffect
 import androidx.wear.compose.foundation.LocalAmbientModeManager
 import androidx.wear.compose.foundation.rememberAmbientModeManager
 import androidx.wear.compose.material.*

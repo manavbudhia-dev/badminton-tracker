@@ -118,6 +118,7 @@ object SessionHistoryStore {
             val prefs = context.getSharedPreferences("badminton_watch_sessions", Context.MODE_PRIVATE)
             val raw = prefs.getString("sessions_json", null)
             if (raw != null) {
+                val shotLogDir = java.io.File(context.filesDir, "shot_logs")
                 val array = try {
                     JSONArray(raw)
                 } catch (e: Exception) {
@@ -126,7 +127,6 @@ object SessionHistoryStore {
                 }
                 if (array != null) {
                     val dao = SessionDatabase.get(context).sessionDao()
-                    val shotLogDir = java.io.File(context.filesDir, "shot_logs")
                     for (i in 0 until array.length()) {
                         runCatching {
                             val obj = array.getJSONObject(i)
